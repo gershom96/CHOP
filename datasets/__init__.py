@@ -1,3 +1,3 @@
-from .chop_dataset import ChopDataset, make_dataloader
+from .omnivla_chop_dataset import OmniVLAChopDataset, make_dataloader
 
-__all__ = ["ChopDataset", "make_dataloader"]
+__all__ = ["OmniVLAChopDataset", "make_dataloader"]

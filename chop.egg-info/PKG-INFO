@@ -1,0 +1,73 @@
+Metadata-Version: 2.4
+Name: chop
+Version: 0.0.1
+Summary: CHOP: Counterfactual Human Preference Labels Improve Obstacle Avoidance in Visuomotor Navigation Policies
+Author: Gershom Seneviratne
+Keywords: vision-language-action model,vision-based navigation,robot learning,policy alignment,Counterfactual alignment
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: Education
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: accelerate>=0.25.0
+Requires-Dist: draccus==0.8.0
+Requires-Dist: einops
+Requires-Dist: huggingface_hub==0.29.1
+Requires-Dist: json-numpy
+Requires-Dist: jsonlines
+Requires-Dist: matplotlib
+Requires-Dist: peft==0.11.1
+Requires-Dist: protobuf
+Requires-Dist: rich
+Requires-Dist: sentencepiece==0.1.99
+Requires-Dist: timm==0.9.10
+Requires-Dist: tokenizers==0.19.1
+Requires-Dist: torch==2.2.0
+Requires-Dist: torchvision==0.17.0
+Requires-Dist: torchaudio==2.2.0
+Requires-Dist: transformers@ git+https://github.com/moojink/transformers-openvla-oft.git
+Requires-Dist: wandb
+Requires-Dist: tensorflow==2.15.0
+Requires-Dist: tensorflow_datasets==4.9.3
+Requires-Dist: tensorflow_graphics==2021.12.3
+Requires-Dist: dlimp@ git+https://github.com/moojink/dlimp_openvla
+Requires-Dist: diffusers==0.11.1
+Requires-Dist: imageio
+Requires-Dist: uvicorn
+Requires-Dist: fastapi
+Requires-Dist: utm
+Requires-Dist: lmdb
+Requires-Dist: zarr
+Requires-Dist: datasets
+Requires-Dist: efficientnet_pytorch
+Requires-Dist: av
+
+# CHOP : Counterfactual Human Preference Labels Improve Obstacle Avoidance in Visuomotor Navigation Policies
+
+## Repository layout
+```
+datasets/               # Dataset + dataloader helper stubs
+configs/                # YAMLs for data paths + LoRA hparams (default.yaml sample)
+policy_sources/         # Upstream policy code copied in wholesale (with licenses)
+third_party/NOTICE      # Tracks third-party sources and licenses
+data/                   # Your indices/splits (gitignored; create locally)
+```
+
+## Using third-party policy code
+- Copy upstream visuomotor policy code into `policy_sources/<policy_name>/` with its LICENSE and a short README noting the repo URL and commit hash.
+- Keep upstream code unmodified where possible; note any edits in `policy_sources/<policy_name>/CHANGES.md` and update `third_party/NOTICE`.
+
+## Scripts (fill in your logic)
+- `scripts/prepare_data.py`: build or mock index JSONs in `data/`.
+- `scripts/finetune_policy.py`: load a policy from `policy_sources/`, attach LoRA, and finetune vs. the dataset.
+- `scripts/evaluate_policy.py`: load a checkpoint and compute metrics on val/test splits.
+- `scripts/visualize_counterfactuals.py`: sanity-check counterfactual annotations.

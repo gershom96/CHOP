@@ -5,7 +5,7 @@ import json
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, MutableMapping, Optional, Tuple
-
+import numpy as np
 
 Annotation = MutableMapping[str, Any]
 PathDict = Dict[str, Any]
@@ -19,6 +19,55 @@ def _get_rankings(annotation: Annotation) -> Optional[List[str]]:
     pref_list = [str(p) for p in preference]
     return pref_list if pref_list else None
 
+def _resample_path(path: np.ndarray, k: int) -> np.ndarray:
+    """
+    Evenly resample a sequence of 3D points to length k using linear interpolation.
+    Expects ``path`` shape (n, 3); returns float32 array shape (k, 3).
+    """
+    path = np.asarray(path, dtype=np.float32).reshape(-1, 3)
+    if path.size == 0:
+        return np.zeros((k, 3), dtype=np.float32)
+    if len(path) == 1:
+        return np.repeat(path, k, axis=0)
+
+    deltas = path[1:] - path[:-1]
+    seg_len = np.linalg.norm(deltas, axis=1)
+    cum = np.concatenate([np.array([0.0], dtype=np.float32), np.cumsum(seg_len, dtype=np.float32)])
+    total = cum[-1]
+    if total == 0:
+        return np.repeat(path[:1], k, axis=0)
+
+    target = np.linspace(0.0, float(total), num=k, dtype=np.float32)
+    out = np.empty((k, path.shape[1]), dtype=np.float32)
+    for i, t in enumerate(target):
+        j = np.searchsorted(cum, t, side="right") - 1
+        j = int(np.clip(j, 0, len(seg_len) - 1))
+        t0, t1 = cum[j], cum[j + 1]
+        alpha = 0.0 if t1 == t0 else float((t - t0) / (t1 - t0))
+        out[i] = path[j] * (1 - alpha) + path[j + 1] * alpha
+    return out
+
+def _get_yaws(points: np.ndarray) -> np.ndarray:
+    """Compute yaw angles (in radians) for a sequence of 3D points."""
+    points = np.asarray(points, dtype=np.float32).reshape(-1, 3)
+    deltas = points[1:, :2] - points[:-1, :2]
+    if deltas.size == 0:
+        return np.zeros((0,), dtype=np.float32)
+    return np.arctan2(deltas[:, 1], deltas[:, 0])
+
+def _extract_path(data: Dict[str, Any]) -> Dict[str, Any]:
+
+    # Resample to k+1, then drop the first (origin) so the stored points align with actions
+    points_full = _resample_path(data.get("points", []), k=9)
+    yaws = _get_yaws(points_full)
+    points = points_full[1:]
+    return {
+        "points": points.tolist(),
+        "left_boundary": _resample_path(data.get("left_boundary", []), k=9)[1:].tolist(),
+        "right_boundary": _resample_path(data.get("right_boundary", []), k=9)[1:].tolist(),
+        "yaws": yaws.tolist(),
+    }
+
 def _process_annotation_file(
     json_path: Path, images_root: Path, image_ext: str
 ) -> List[Dict[str, Any]]:
@@ -28,6 +77,8 @@ def _process_annotation_file(
     bag_name = Path(raw.get("bag", json_path.stem)).stem
     annotations = raw.get("annotations_by_stamp") or {}
 
+    bag_dir = images_root / bag_name
+    bag_prefix = Path(bag_name)
     processed: List[Dict[str, Any]] = []
     for stamp, annotation in annotations.items():
         rankings = _get_rankings(annotation)
@@ -35,28 +86,25 @@ def _process_annotation_file(
             continue
 
         paths: Dict[str, PathDict] = annotation.get("paths") or {}
-        path_0_data = paths.get(rankings[0])
-        path_1_data = paths.get(rankings[1])
+        path_0_data = _extract_path(paths.get(rankings[0]))
+        path_1_data = _extract_path(paths.get(rankings[1]))
 
         if not path_0_data or not path_1_data:
             continue
 
-        def _extract_path(data: Dict[str, Any]) -> Dict[str, Any]:
-            return {
-                "points": data.get("points", []),
-                "left_boundary": data.get("left_boundary", []),
-                "right_boundary": data.get("right_boundary", []),
-            }
-
-        image_path = images_root / bag_name / f"{stamp}.{image_ext}"
+        image_filename = f"img_{stamp}.{image_ext}"
+        if not (bag_dir / image_filename).is_file():
+            print(f"Warning: missing image file {bag_dir / image_filename}, skipping sample.")
+            continue
+        image_path = bag_prefix / image_filename
         processed.append(
             {
                 "timestamp": stamp,
                 "frame_idx": annotation.get("frame_idx"),
                 "robot_width": annotation.get("robot_width"),
                 "image_path": str(image_path),
-                "path_0": _extract_path(path_0_data),
-                "path_1": _extract_path(path_1_data),
+                "path_0": path_0_data,
+                "path_1": path_1_data,
                 "position": annotation.get("position"),
                 "yaw": annotation.get("yaw"),
                 "stop": annotation.get("stop", False),
@@ -165,7 +213,7 @@ def main() -> None:
     parser.add_argument(
         "--image-ext",
         type=str,
-        default="jpg",
+        default="png",
         help="Image extension to use when constructing image paths (e.g., jpg or png).",
     )
     parser.add_argument(

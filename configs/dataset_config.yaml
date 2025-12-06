@@ -1,0 +1,13 @@
+# parameters for training dataset
+image_size: [224, 224] # width, height
+context_type: temporal
+normalize: True
+learn_angle: True
+num_workers: 10
+
+datasets_scand_a:
+  data_root: /home/beast-gamma/Documents/GAMMA/Projects/CHOP/data/lora-data
+  train: /home/beast-gamma/Documents/GAMMA/Projects/CHOP/data/lora-data/train.json
+  test: /home/beast-gamma/Documents/GAMMA/Projects/CHOP/data/lora-data/test.json
+  image_root: /media/beast-gamma/Media/Datasets/SCAND/images
+  
