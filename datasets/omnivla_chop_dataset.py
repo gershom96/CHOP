@@ -63,7 +63,9 @@ class OmniVLAChopDataset(torch.utils.data.Dataset):
         normalize: bool = True,
     ) -> None:
         super().__init__()
+        
         self.dataset_path = Path(dataset_path) if dataset_path is not None else _DEFAULT_INDEX
+        
         if not self.dataset_path.exists():
             raise FileNotFoundError(f"Index not found: {self.dataset_path}")
         
@@ -88,7 +90,6 @@ class OmniVLAChopDataset(torch.utils.data.Dataset):
         self.action_tokenizer = action_tokenizer
         self.base_tokenizer = base_tokenizer
         self.prompt_builder_fn = prompt_builder_fn
-        self.image_transform = image_transform
         self.predict_stop_token = predict_stop_token
         self.modality_choices = modality_choices
         self.learn_angle = learn_angle
@@ -157,6 +158,7 @@ class OmniVLAChopDataset(torch.utils.data.Dataset):
 
         if self.normalize:
             metric_spacing = self.data_config.get("metric_waypoint_spacing", 1.0)
+            print( "metric_spacing:", metric_spacing )
             actions = actions / (metric_spacing * self.waypoint_spacing)
         return actions.float()
         
@@ -212,19 +214,30 @@ class OmniVLAChopDataset(torch.utils.data.Dataset):
         if not os.path.exists(cache_filename):
             tqdm_iterator = tqdm.tqdm(trajectory_cache, disable=not use_tqdm, dynamic_ncols=True,
                                   desc=f"Building LMDB cache for {self.dataset_name}")
-            with lmdb.open(cache_filename, map_size=2**40) as image_cache:
-                with image_cache.begin(write=True) as txn:
-                    for frame in tqdm_iterator:
-                        rel_path = frame["image_path"]
-                        image_path = str(self.image_root / rel_path)
-                        with open(image_path, "rb") as f:
-                            txn.put(image_path.encode(), f.read())
+            
+            env = lmdb.open(cache_filename, map_size=2**40)
+            txn = env.begin(write=True)
+            try:
+                for i, frame in enumerate(tqdm_iterator):
+                    rel_path = frame["image_path"]
+                    image_path = str(self.image_root / rel_path)
 
-        # DO NOT open the env here — only store the path
+                    with open(image_path, "rb") as f:
+                        img_bytes = f.read()
+                    txn.put(image_path.encode(), img_bytes)
+
+                    # Commit every N images to avoid giant in-memory transactions
+                    if (i + 1) % 1000 == 0:
+                        txn.commit()
+                        txn = env.begin(write=True)
+                # final commit
+                txn.commit()
+            finally:
+                env.close()
+
         self._image_cache_path = cache_filename
-        image_cache = None
-
-        return image_cache
+        self._image_cache = None
+        return None
 
     def _convert_path(self, path_data: Dict[str, Any]) -> Dict[str, torch.Tensor]:
         
@@ -378,6 +391,8 @@ class OmniVLAChopDataset(torch.utils.data.Dataset):
             goal_image = torch.flip(goal_image, [2])
             actions[:,1] = -actions[:,1]
             actions[:,3] = -actions[:,3]   
+            neg_actions[:,1] = -neg_actions[:,1]
+            neg_actions[:,3] = -neg_actions[:,3]
             goal_pose_cos_sin[1] = -goal_pose_cos_sin[1]
             goal_pose_cos_sin[3] = -goal_pose_cos_sin[3]           
         

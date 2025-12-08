@@ -55,21 +55,21 @@ def _get_yaws(points: np.ndarray) -> np.ndarray:
         return np.zeros((0,), dtype=np.float32)
     return np.arctan2(deltas[:, 1], deltas[:, 0])
 
-def _extract_path(data: Dict[str, Any]) -> Dict[str, Any]:
+def _extract_path(data: Dict[str, Any], num_points: int) -> Dict[str, Any]:
 
     # Resample to k+1, then drop the first (origin) so the stored points align with actions
-    points_full = _resample_path(data.get("points", []), k=9)
+    points_full = _resample_path(data.get("points", []), k=num_points+1)
     yaws = _get_yaws(points_full)
     points = points_full[1:]
     return {
         "points": points.tolist(),
-        "left_boundary": _resample_path(data.get("left_boundary", []), k=9)[1:].tolist(),
-        "right_boundary": _resample_path(data.get("right_boundary", []), k=9)[1:].tolist(),
+        "left_boundary": _resample_path(data.get("left_boundary", []), k=num_points+1)[1:].tolist(),
+        "right_boundary": _resample_path(data.get("right_boundary", []), k=num_points+1)[1:].tolist(),
         "yaws": yaws.tolist(),
     }
 
 def _process_annotation_file(
-    json_path: Path, images_root: Path, image_ext: str
+    json_path: Path, images_root: Path, image_ext: str, num_points: int
 ) -> List[Dict[str, Any]]:
     with json_path.open("r") as f:
         raw = json.load(f)
@@ -86,8 +86,8 @@ def _process_annotation_file(
             continue
 
         paths: Dict[str, PathDict] = annotation.get("paths") or {}
-        path_0_data = _extract_path(paths.get(rankings[0]))
-        path_1_data = _extract_path(paths.get(rankings[1]))
+        path_0_data = _extract_path(paths.get(rankings[0]), num_points=num_points)
+        path_1_data = _extract_path(paths.get(rankings[1]), num_points=num_points)
 
         if not path_0_data or not path_1_data:
             continue
@@ -158,6 +158,7 @@ def preprocess_scand(
     test_train_split_json: Path,
     image_ext: str = "jpg",
     default_split: str = "train",
+    num_points: int = 8,
 ) -> Tuple[int, int]:
     """Generate per-split SCAND-A indices, grouping samples by bag within train/test files."""
     split_map = json.load(test_train_split_json.open("r")) if test_train_split_json.exists() else {}
@@ -170,7 +171,7 @@ def preprocess_scand(
 
     with _JsonArrayWriter(train_path, pretty=True) as train_writer, _JsonArrayWriter(test_path, pretty=True) as test_writer:
         for json_file in sorted(scand_dir.glob("*.json")):
-            entries = _process_annotation_file(json_file, images_root, image_ext)
+            entries = _process_annotation_file(json_file, images_root, image_ext, num_points)
             if not entries:
                 continue
 
@@ -222,6 +223,12 @@ def main() -> None:
         default=Path(__file__).resolve().parent.parent / "data" / "annotations" / "test-train-split.json",
         help="Path to the JSON file defining the train/test split.",
     )
+    parser.add_argument(
+        "--num-points",
+        type=int,
+        default=8,
+        help="Number of points to sample from each trajectory.",
+    )
     args = parser.parse_args()
 
     train_count, test_count = preprocess_scand(
@@ -230,7 +237,9 @@ def main() -> None:
         args.output_dir,
         args.test_train_split_json,
         args.image_ext,
+        args.num_points,
     )
+
     print(f"Wrote {train_count} train samples to {args.output_dir / 'train.json'} (bag-grouped)")
     print(f"Wrote {test_count} test samples to {args.output_dir / 'test.json'} (bag-grouped)")
 

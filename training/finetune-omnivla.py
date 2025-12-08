@@ -382,10 +382,24 @@ def run_forward_pass(
 
         limited_temp_dist = torch.clip(batch["temp_dist"], min=0.0, max=20.0) 
         lan_bool = (batch["goal_mask_select"] == 7)|(batch["goal_mask_select"] == 8) #object loss is only for the LeLaN dataset
-        loss = 1.0*torch.nn.MSELoss()(action_ref, predicted_actions) - 0.5*torch.nn.MSELoss()(neg_action_ref, predicted_actions) + 0.1*torch.nn.MSELoss()(obj_pose_norm[lan_bool], predicted_actions[:,-1,0:2][lan_bool]) + 0.1*torch.nn.MSELoss()(predicted_actions[:,0:-1], predicted_actions[:,1:])            
+        
+        if lan_bool.any():
+            obj_loss = torch.nn.MSELoss()(obj_pose_norm[lan_bool], predicted_actions[:, -1, 0:2][lan_bool])
+        else:
+            obj_loss = torch.tensor(0.0, device=device_id, dtype=torch.bfloat16)
+
+        
+        loss = (
+            torch.nn.MSELoss()(action_ref, predicted_actions)
+            - 0.1 * torch.nn.MSELoss()(neg_action_ref, predicted_actions)
+            + 0.1 * obj_loss
+            + 0.1 * torch.nn.MSELoss()(predicted_actions[:, 0:-1], predicted_actions[:, 1:])
+        )
         L2_action = torch.nn.MSELoss()(action_ref, predicted_actions)
-        L2_obj = torch.nn.MSELoss()(obj_pose_norm[lan_bool], predicted_actions[:,-1,0:2][lan_bool])
+        L2_obj = obj_loss
         L2_smooth = torch.nn.MSELoss()(predicted_actions[:,0:-1], predicted_actions[:,1:])
+        neg_action_loss = torch.nn.MSELoss()(neg_action_ref, predicted_actions)
+
             
         loss_list = []
         task_list = []
@@ -398,7 +412,8 @@ def run_forward_pass(
         metrics.update(
             {
                 "loss_value": loss.item(),            # Detached value for logging
-                "L2_action_value": L2_action.item(),  # Detached value for logging                
+                "L2_action_value": L2_action.item(),  # Detached value for logging
+                "L2_neg_action": neg_action_loss.item(),            
                 "L2_obj_value": L2_obj.item(),        # Detached value for logging
                 "L2_smooth_value": L2_smooth.item(),  # Detached value for logging                  
                 "L2_sate": loss_list[0].item(),
@@ -946,7 +961,8 @@ def train_omnivla(cfg: OmniVLAConfig) -> None:
     # Deque to store recent train metrics (used for computing smoothened metrics for gradient accumulation)
     recent_metrics = {
         "loss_value": deque(maxlen=cfg.grad_accumulation_steps),
-        "L2_action_value": deque(maxlen=cfg.grad_accumulation_steps),        
+        "L2_action_value": deque(maxlen=cfg.grad_accumulation_steps),
+        "L2_neg_action": deque(maxlen=cfg.grad_accumulation_steps),
         "L2_obj_value": deque(maxlen=cfg.grad_accumulation_steps),
         "L2_smooth_value": deque(maxlen=cfg.grad_accumulation_steps),             
         "L2_sate": deque(maxlen=cfg.grad_accumulation_steps),
