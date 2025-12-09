@@ -977,13 +977,16 @@ def train_omnivla(cfg: OmniVLAConfig) -> None:
     }
 
     #You can list your all training datasets. In this example, we list same two dummy data loaders.
-    iters = [iter(train_loader)]
+    train_loaders = [train_loader]
     samplers = [sampler_train]
                  
     log_count = 0
     for epoch in range(100):
+        # Reset sampler epochs and fresh iterators at the start of every epoch
         for sampler in samplers:
             sampler.set_epoch(epoch)
+        iters = [iter(loader) for loader in train_loaders]
+        sampler_epochs = [epoch for _ in samplers]
                 
         with tqdm.tqdm(total=cfg.max_steps, leave=False) as progress:
             if TRAIN_MODE:
@@ -1002,7 +1005,10 @@ def train_omnivla(cfg: OmniVLAConfig) -> None:
                     try:
                         batch = next(it)
                     except StopIteration:
-                        iters[i] = iter([][i])
+                        # Dataloader exhausted before reaching max_steps; reinitialize iterator
+                        sampler_epochs[i] += 1
+                        samplers[i].set_epoch(sampler_epochs[i])
+                        iters[i] = iter(train_loaders[i])
                         batch = next(iters[i])
                     batches.append(batch)
                 

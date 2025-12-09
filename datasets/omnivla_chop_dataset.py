@@ -336,15 +336,14 @@ class OmniVLAChopDataset(torch.utils.data.Dataset):
         actions = pos_actions
 
         # ViNT-style goal pose (x, y, cos, sin) in ego frame
-        goal_pose_cos_sin = torch.tensor(
-            [
+        goal_pose_cos_sin = torch.stack(
+            (
                 goal_pos[0],
                 goal_pos[1],
-                torch.cos(torch.tensor(goal_yaw_loc)),
-                torch.sin(torch.tensor(goal_yaw_loc)),
-            ],
-            dtype=torch.float32,
-        )
+                torch.cos(goal_yaw_loc),
+                torch.sin(goal_yaw_loc),
+            )
+        ).float()
 
         current_action = actions[0]
         future_actions = actions[1:]
