@@ -6,10 +6,10 @@ chop.egg-info/dependency_links.txt
 chop.egg-info/requires.txt
 chop.egg-info/top_level.txt
 datasets/__init__.py
+datasets/chop_dataset.py
 datasets/omnivla_chop_dataset.py
-datasets/omnivla_chop_gnm_compat.py
-datasets/preprocess_scand_a.py
-datasets/vint_chop_dataset.py
+datasets/preprocess_scand_a_chop.py
+datasets/vint_gnm_chop_dataset.py
 policy_sources/omnivla/experiments/robot/openvla_utils.py
 policy_sources/omnivla/inference/ros_utils.py
 policy_sources/omnivla/inference/run_omnivla.py
@@ -147,4 +147,5 @@ policy_sources/visualnav_transformer/train/vint_train/visualizing/__init__.py
 policy_sources/visualnav_transformer/train/vint_train/visualizing/action_utils.py
 policy_sources/visualnav_transformer/train/vint_train/visualizing/distance_utils.py
 policy_sources/visualnav_transformer/train/vint_train/visualizing/visualize_utils.py
-testing/test_dataloader.py
+testing/test_gnm_vint_chop_dataloader.py
+testing/test_omnivla_chop_dataloader.py

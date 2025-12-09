@@ -158,7 +158,7 @@ class OmniVLAChopDataset(torch.utils.data.Dataset):
 
         if self.normalize:
             metric_spacing = self.data_config.get("metric_waypoint_spacing", 1.0)
-            print( "metric_spacing:", metric_spacing )
+            # print( "metric_spacing:", metric_spacing )
             actions = actions / (metric_spacing * self.waypoint_spacing)
         return actions.float()
         
