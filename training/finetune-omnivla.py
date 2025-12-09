@@ -120,7 +120,7 @@ class OmniVLAConfig:
     num_images_in_input: int = 2                     # Number of images in the VLA input (default: 1)
 
     # Training configuration
-    batch_size: int = 8                              # Batch size per device (total batch size = batch_size * num GPUs)
+    batch_size: int = 4                              # Batch size per device (total batch size = batch_size * num GPUs)
     learning_rate: float = 1e-4                      # Learning rate
     lr_warmup_steps: int = 0                         # Number of steps to warm up learning rate (from 10% to 100%)
     num_steps_before_decay: int = 100_000            # Number of steps before LR decays by 10x
@@ -133,7 +133,7 @@ class OmniVLAConfig:
 
     # LoRA
     use_lora: bool = True                            # If True, uses LoRA fine-tuning
-    lora_rank: int = 64                              # Rank of LoRA weight matrix
+    lora_rank: int = 32                              # Rank of LoRA weight matrix
     lora_dropout: float = 0.0                        # Dropout applied to LoRA weights
     merge_lora_during_training: bool = True          # If True, merges LoRA weights and saves result during training
                                                      #   Note: Merging can be very slow on some machines. If so, set to
