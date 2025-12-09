@@ -145,7 +145,6 @@ class ViNTChopDataset(Dataset):
         self.data_config = all_data_config[self.dataset_name]
         self.trajectory_cache = {}
         self._load_index()
-        self._build_caches()
         
         if self.learn_angle:
             self.num_action_params = 3
@@ -179,6 +178,9 @@ class ViNTChopDataset(Dataset):
                 item.setdefault("bag", bag_name)
                 item["timestamp"] = sample.get("timestamp")
                 item["frame_idx"] = sample.get("frame_idx")
+
+                if item["frame_idx"] < self.context_size * self.waypoint_spacing
+                    continue  # not enough context
                 item["path_0"] = self._convert_path(sample.get("path_0", {}))
                 item["path_1"] = self._convert_path(sample.get("path_1", {}))
                 if "position" in sample and sample.get("position") is not None:

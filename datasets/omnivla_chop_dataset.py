@@ -209,34 +209,56 @@ class OmniVLAChopDataset(torch.utils.data.Dataset):
                 trajectory_cache.append(item)
         return trajectory_cache
 
+    # def _build_image_cache(self, trajectory_cache: List[Dict[str, Any]], use_tqdm: bool = True):
+    #     cache_filename = os.path.join(self.data_split_folder, f"dataset_{self.dataset_name}_{self.data_split_type}.lmdb")
+
+    #     # build the LMDB file if missing (write once)
+    #     if not os.path.exists(cache_filename):
+    #         tqdm_iterator = tqdm.tqdm(trajectory_cache, disable=not use_tqdm, dynamic_ncols=True,
+    #                               desc=f"Building LMDB cache for {self.dataset_name}")
+            
+    #         env = lmdb.open(cache_filename, map_size=2**40)
+    #         txn = env.begin(write=True)
+    #         try:
+    #             for i, frame in enumerate(tqdm_iterator):
+    #                 rel_path = frame["image_path"]
+    #                 image_path = str(self.image_root / rel_path)
+
+    #                 with open(image_path, "rb") as f:
+    #                     img_bytes = f.read()
+    #                 txn.put(image_path.encode(), img_bytes)
+
+    #                 # Commit every N images to avoid giant in-memory transactions
+    #                 if (i + 1) % 1000 == 0:
+    #                     txn.commit()
+    #                     txn = env.begin(write=True)
+    #             # final commit
+    #             txn.commit()
+    #         finally:
+    #             env.close()
+
+    #     self._image_cache_path = cache_filename
+    #     self._image_cache = None
+    #     return None
+
     def _build_image_cache(self, trajectory_cache: List[Dict[str, Any]], use_tqdm: bool = True):
         cache_filename = os.path.join(self.data_split_folder, f"dataset_{self.dataset_name}_{self.data_split_type}.lmdb")
-
-        # build the LMDB file if missing (write once)
-        if not os.path.exists(cache_filename):
-            tqdm_iterator = tqdm.tqdm(trajectory_cache, disable=not use_tqdm, dynamic_ncols=True,
-                                  desc=f"Building LMDB cache for {self.dataset_name}")
-            
-            env = lmdb.open(cache_filename, map_size=2**40)
-            txn = env.begin(write=True)
-            try:
-                for i, frame in enumerate(tqdm_iterator):
-                    rel_path = frame["image_path"]
-                    image_path = str(self.image_root / rel_path)
-
-                    with open(image_path, "rb") as f:
-                        img_bytes = f.read()
-                    txn.put(image_path.encode(), img_bytes)
-
-                    # Commit every N images to avoid giant in-memory transactions
-                    if (i + 1) % 1000 == 0:
-                        txn.commit()
-                        txn = env.begin(write=True)
-                # final commit
-                txn.commit()
-            finally:
-                env.close()
-
+        
+        env = lmdb.open(cache_filename, map_size=2**40)  # existing file is fine
+        with env.begin(write=True) as txn:
+            tqdm_iterator = tqdm.tqdm(trajectory_cache, disable=not use_tqdm, dynamic_ncols=True, desc=f"Filling LMDB for {self.dataset_name}")
+            for i, frame in enumerate(tqdm_iterator):
+                image_path = str(self.image_root / frame["image_path"])
+                key = image_path.encode()
+                if txn.get(key) is not None:
+                    continue  # already cached
+                with open(image_path, "rb") as f:
+                    txn.put(key, f.read())
+                if (i + 1) % 1000 == 0:
+                    txn.commit()
+                    txn = env.begin(write=True)
+            txn.commit()
+        env.close()
         self._image_cache_path = cache_filename
         self._image_cache = None
         return None
