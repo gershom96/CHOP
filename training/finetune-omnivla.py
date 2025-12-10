@@ -108,7 +108,7 @@ transform = transforms.Compose([
 @dataclass
 class OmniVLAConfig:
     # fmt: off
-    vla_path: str = "/home/beast-gamma/Documents/GAMMA/Projects/weights/omnivla-finetuned-cast"             # Path to OpenVLA model (on HuggingFace Hub or stored locally)
+    vla_path: str = "./weights/omnivla-finetuned-cast"             # Path to OpenVLA model (on HuggingFace Hub or stored locally)
 
     # Dataset
     data_root_dir: Path = Path("datasets/rlds")      # Directory containing RLDS datasets
@@ -120,20 +120,20 @@ class OmniVLAConfig:
     num_images_in_input: int = 2                     # Number of images in the VLA input (default: 1)
 
     # Training configuration
-    batch_size: int = 1                              # Batch size per device (total batch size = batch_size * num GPUs)
+    batch_size: int = 4                              # Batch size per device (total batch size = batch_size * num GPUs)
     learning_rate: float = 1e-4                      # Learning rate
     lr_warmup_steps: int = 0                         # Number of steps to warm up learning rate (from 10% to 100%)
     num_steps_before_decay: int = 100_000            # Number of steps before LR decays by 10x
     grad_accumulation_steps: int = 10                # Number of gradient accumulation steps
     max_steps: int = 200_000                         # Max number of training steps
-    save_freq: int = 1000                          # Checkpoint saving frequency in steps    
+    save_freq: int = 10000                          # Checkpoint saving frequency in steps    
     save_latest_checkpoint_only: bool = False        # If True, saves only 1 checkpoint, overwriting latest checkpoint
                                                      #   (If False, saves all checkpoints)
     image_aug: bool = True                           # If True, trains with image augmentations (HIGHLY RECOMMENDED)
 
     # LoRA
     use_lora: bool = True                            # If True, uses LoRA fine-tuning
-    lora_rank: int = 8                              # Rank of LoRA weight matrix
+    lora_rank: int = 32                              # Rank of LoRA weight matrix
     lora_dropout: float = 0.0                        # Dropout applied to LoRA weights
     merge_lora_during_training: bool = True          # If True, merges LoRA weights and saves result during training
                                                      #   Note: Merging can be very slow on some machines. If so, set to
@@ -391,7 +391,7 @@ def run_forward_pass(
         
         loss = (
             torch.nn.MSELoss()(action_ref, predicted_actions)
-            - 0.1 * torch.nn.MSELoss()(neg_action_ref, predicted_actions)
+            # - 0.1 * torch.nn.MSELoss()(neg_action_ref, predicted_actions)
             + 0.1 * obj_loss
             + 0.1 * torch.nn.MSELoss()(predicted_actions[:, 0:-1], predicted_actions[:, 1:])
         )
@@ -923,7 +923,8 @@ def train_omnivla(cfg: OmniVLAConfig) -> None:
             learn_angle=config["learn_angle"],
             normalize=config["normalize"],
             modality_choices=(4, 5, 6),
-        ) 
+            create_image_cache=True if data_split_type == "train" else False
+        )
 
         if data_split_type == "train":
             train_dataset.append(dataset_chop)

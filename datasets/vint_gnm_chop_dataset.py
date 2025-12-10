@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import tqdm
 import io
 import lmdb
+from collections import defaultdict
 
 import torch
 from torch.utils.data import Dataset
@@ -144,6 +145,7 @@ class ViNTChopDataset(Dataset):
         self.dataset_index = dataset_names.index(self.dataset_name)
         self.data_config = all_data_config[self.dataset_name]
         self.trajectory_cache = {}
+        self.bag_idx_img_ptr = {}
         self._load_index()
         
         if self.learn_angle:
@@ -179,18 +181,19 @@ class ViNTChopDataset(Dataset):
                 item["timestamp"] = sample.get("timestamp")
                 item["frame_idx"] = sample.get("frame_idx")
 
-                if item["frame_idx"] < self.context_size * self.waypoint_spacing
-                    continue  # not enough context
-                item["path_0"] = self._convert_path(sample.get("path_0", {}))
-                item["path_1"] = self._convert_path(sample.get("path_1", {}))
-                if "position" in sample and sample.get("position") is not None:
-                    item["position"] = torch.as_tensor(sample.get("position"), dtype=torch.float32)
-                if "yaw" in sample and sample["yaw"] is not None:
-                    item["yaw"] = torch.as_tensor(sample["yaw"], dtype=torch.float32)
-                item["stop"] = bool(sample.get("stop", False))
-                item["image_path"] = sample.get("image_path")
+                if item["frame_idx"] >= self.context_size * self.waypoint_spacing:
+                      # not enough context
+                    item["path_0"] = self._convert_path(sample.get("path_0", {}))
+                    item["path_1"] = self._convert_path(sample.get("path_1", {}))
+                    if "position" in sample and sample.get("position") is not None:
+                        item["position"] = torch.as_tensor(sample.get("position"), dtype=torch.float32)
+                    if "yaw" in sample and sample["yaw"] is not None:
+                        item["yaw"] = torch.as_tensor(sample["yaw"], dtype=torch.float32)
+                    item["stop"] = bool(sample.get("stop", False))
+                    item["image_path"] = sample.get("image_path")
 
-                trajectory_cache.append(item)
+                    trajectory_cache.append(item)
+                self.bag_idx_img_ptr[(bag_name, item["frame_idx"])] = sample.get("image_path")
         return trajectory_cache
 
     def _build_image_cache(self, trajectory_cache: List[Dict[str, Any]], use_tqdm: bool = True):
@@ -331,8 +334,9 @@ class ViNTChopDataset(Dataset):
             yaws = yaws.squeeze()
         
         assert pts.shape[0] == yaws.shape[0], "Points and yaws must have the same number of waypoints"
-        actions = pts[:, :2]  # ego-frame waypoints (x,y)
-
+        actions = pts[:self.len_traj_pred*self.waypoint_spacing + 1, :2]  # ego-frame waypoints (x,y)
+        yaws = yaws[:self.len_traj_pred*self.waypoint_spacing + 1]  # ego-frame yaws
+        
         if self.learn_angle and yaws.numel() > 0:
             yaw_col = yaws.reshape(-1, 1)
             actions = torch.cat([actions, yaw_col], dim=1)
@@ -355,15 +359,6 @@ class ViNTChopDataset(Dataset):
 
         return pos_actions, neg_actions, goal_pos, goal_yaw_loc
     
-    def _get_trajectory(self, trajectory_name):
-        if trajectory_name in self.trajectory_cache:
-            return self.trajectory_cache[trajectory_name]
-        else:
-            with open(os.path.join(self.data_folder, trajectory_name, "traj_data.pkl"), "rb") as f:
-                traj_data = pickle.load(f)
-            self.trajectory_cache[trajectory_name] = traj_data
-            return traj_data
-
     def __len__(self) -> int:
         return len(self.trajectory_cache)
 
@@ -381,49 +376,32 @@ class ViNTChopDataset(Dataset):
         """
         sample = self.trajectory_cache[i]
         cur_pos = sample["position"][:2]                            # w.r.t. world frame
-        cur_yaw = sample["yaw"]                                     # w.r.t. world frame
-        image_path = str(self.image_root / sample["image_path"])
-        cur_image = self._load_image(image_path)
+        cur_yaw = sample["yaw"]
+        curr_bag = sample["bag"]
+        curr_frame_idx = sample["frame_idx"]
 
-        # f_curr, curr_time, max_goal_dist = self.index_to_data[i]
-        
         goal = self._get_goal(i)
         goal_pos = goal["goal_position"]
         goal_yaw = goal["goal_yaw"]
         goal_image = goal["goal_image"]
 
-        f_goal, goal_time, goal_is_negative = 
-
         # Load images
         context = []
         if self.context_type == "temporal":
             # sample the last self.context_size times from interval [0, curr_time)
-            context_times = list(
+            context = list(
                 range(
-                    curr_time + -self.context_size * self.waypoint_spacing,
-                    curr_time + 1,
+                    curr_frame_idx + -self.context_size * self.waypoint_spacing,
+                    curr_frame_idx + 1,
                     self.waypoint_spacing,
                 )
             )
-            context = [(f_curr, t) for t in context_times]
         else:
             raise ValueError(f"Invalid context type {self.context_type}")
 
         obs_image = torch.cat([
-            self._load_image(f, t) for f, t in context
+            self._load_image(self.bag_idx_img_ptr[(curr_bag, t)]) for t in context
         ])
-
-        # Load goal image
-        goal_image = self._load_image(f_goal, goal_time)
-
-        # Load other trajectory data
-        curr_traj_data = self._get_trajectory(f_curr)
-        curr_traj_len = len(curr_traj_data["position"])
-        assert curr_time < curr_traj_len, f"{curr_time} and {curr_traj_len}"
-
-        goal_traj_data = self._get_trajectory(f_goal)
-        goal_traj_len = len(goal_traj_data["position"])
-        assert goal_time < goal_traj_len, f"{goal_time} an {goal_traj_len}"
 
         # Compute actions
         actions, goal_pos = self._compute_actions(curr_traj_data, curr_time, goal_time)
