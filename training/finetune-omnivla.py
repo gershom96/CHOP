@@ -391,7 +391,7 @@ def run_forward_pass(
         
         loss = (
             torch.nn.MSELoss()(action_ref, predicted_actions)
-            - 0.1 * torch.nn.MSELoss()(neg_action_ref, predicted_actions)
+            # - 0.1 * torch.nn.MSELoss()(neg_action_ref, predicted_actions)
             + 0.1 * obj_loss
             + 0.1 * torch.nn.MSELoss()(predicted_actions[:, 0:-1], predicted_actions[:, 1:])
         )
@@ -923,7 +923,8 @@ def train_omnivla(cfg: OmniVLAConfig) -> None:
             learn_angle=config["learn_angle"],
             normalize=config["normalize"],
             modality_choices=(4, 5, 6),
-        ) 
+            create_image_cache=True if data_split_type == "train" else False
+        )
 
         if data_split_type == "train":
             train_dataset.append(dataset_chop)
