@@ -79,6 +79,7 @@ from policy_sources.omnivla.experiments.robot.openvla_utils import (
     update_auto_map,
 )
 
+import datetime
 from policy_sources.omnivla.prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
 from policy_sources.omnivla.prismatic.extern.hf.modeling_prismatic import OpenVLAForActionPrediction_MMNv1
 from policy_sources.omnivla.prismatic.extern.hf.processing_prismatic import PrismaticImageProcessor, PrismaticProcessor
@@ -126,7 +127,7 @@ class OmniVLAConfig:
     num_steps_before_decay: int = 100_000            # Number of steps before LR decays by 10x
     grad_accumulation_steps: int = 10                # Number of gradient accumulation steps
     max_steps: int = 200_000                         # Max number of training steps
-    save_freq: int = 10000                          # Checkpoint saving frequency in steps    
+    save_freq: int = 2500                          # Checkpoint saving frequency in steps    
     save_latest_checkpoint_only: bool = False        # If True, saves only 1 checkpoint, overwriting latest checkpoint
                                                      #   (If False, saves all checkpoints)
     image_aug: bool = True                           # If True, trains with image augmentations (HIGHLY RECOMMENDED)
@@ -142,7 +143,7 @@ class OmniVLAConfig:
     wandb_entity: str = "gershom-university-of-maryland"                    # Name of WandB entity
     wandb_project: str = "CHOP"        # Name of WandB project
     run_id_note: Optional[str] = None                # Extra note to add to end of run ID for logging
-    run_id_override: Optional[str] = None            # Optional string to override the run ID with
+    run_id_override: Optional[str] = f"omnivla_run_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"            # Optional string to override the run ID with
     wandb_log_freq: int = 10                         # WandB logging frequency in steps
 
 def remove_ddp_in_checkpoint(state_dict) -> dict:
