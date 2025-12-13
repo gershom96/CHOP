@@ -1,0 +1,71 @@
+project_name: chop-vint
+run_name: vint-5c
+
+# training setup
+use_wandb: True # set to false if you don't want to log to wandb
+train: True
+batch_size: 64
+epochs: 100
+gpu_ids: [0]
+num_workers: 0
+lr: 5e-4
+optimizer: adamw
+clipping: False
+max_norm: 1.
+scheduler: "cosine"
+warmup: True 
+warmup_epochs: 4
+cyclic_period: 10
+plateau_patience: 3
+plateau_factor: 0.5
+seed: 0
+
+# model params
+model_type: vint
+obs_encoder: "efficientnet-b0" # by default, this is imagenet pretrained
+obs_encoding_size: 512
+mha_num_attention_heads: 4
+mha_num_attention_layers: 4
+mha_ff_dim_factor: 4
+late_fusion: False
+
+# normalization for the action space
+normalize: True
+
+# context
+context_type: temporal
+context_size: 5
+# tradeoff between action and distance prediction loss
+alpha: 0.5
+
+# distance bounds for distance and action and distance predictions 
+distance:
+  min_dist_cat: 0
+  max_dist_cat: 20
+
+close_far_threshold: 10 # distance threshold used to seperate the close and the far  subgoals that are sampled per datapoint
+
+# action output params
+len_traj_pred: 5
+learn_angle: True
+
+# dataset specific parameters
+image_size: [85, 64] # width, height
+goal_type: "image"
+
+load_run: True
+load_pretrained: True
+pretrained_model_path: ./weights/vint.pth
+load_opt_sched: False
+
+datasets:
+  scand_a:
+    data_root: ./data/lora-data
+    train: ./data/lora-data/train.json
+    test: ./data/lora-data/test.json
+    image_root: /media/beast-gamma/Media/Datasets/SCAND/images
+    goals_per_obs: 1 # how many goals are sampled per observation
+    negative_mining: True # negative mining from the ViNG paper (Shah et al.)  
+    data_split_folder: ./data/lora-data/
+    negative_mining_pct: 0.05
+    metric_waypoint_spacing: 0.38

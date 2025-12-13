@@ -27,31 +27,26 @@ from policy_sources.visualnav_transformer.train.vint_train.data.data_utils impor
 
 _DEFAULT_INDEX = Path(__file__).resolve().parent.parent / "data" / "lora-data" / "train.json"
 
-
-class ViNTChopDataset(Dataset):
+class VisualNavTformerCHOPDataset(Dataset):
     def __init__(
         self,
         image_root: str,
         dataset_path: str,
         dataset_name: str,
         image_size: Tuple[int, int],
-        image_transform: ImageTransform,
         data_split_folder: str,
+        data_split_type: str,
         waypoint_spacing: int,
-        min_dist_cat: int,
         max_dist: int,
-        min_action_distance: int,
-        max_action_distance: int,
         negative_mining_pct: float,
         len_traj_pred: int,
         learn_angle: bool,
         context_size: int,
         context_type: str = "temporal",
-        end_slack: int = 0,
         goals_per_obs: int = 1,
         normalize: bool = True,
-        obs_type: str = "image",
         goal_type: str = "image",
+        create_image_cache: bool = True
     ):
         """
         Main ViNT dataset class
@@ -69,7 +64,6 @@ class ViNTChopDataset(Dataset):
             learn_angle (bool): Whether to learn the yaw of the robot at each predicted waypoint if this is an action dataset
             context_size (int): Number of previous observations to use as context
             context_type (str): Whether to use temporal, randomized, or randomized temporal context
-            end_slack (int): Number of timesteps to ignore at the end of the trajectory
             goals_per_obs (int): Number of goals to sample per observation
             normalize (bool): Whether to normalize the distances or actions
             goal_type (str): What data type to use for the goal. The only one supported is "image" for now.
@@ -91,67 +85,45 @@ class ViNTChopDataset(Dataset):
 
         self.image_root = Path(image_root)
         self.data_split_folder = data_split_folder
+        self.data_split_type = data_split_type
         self.dataset_name = dataset_name
-
-        self.trajectory_cache, self._image_cache = self._load_index(self.dataset_path)
+        self.create_image_cache = create_image_cache
+        self.bag_idx_img_ptr = defaultdict(str)
+        self.context_size = context_size
+        self.waypoint_spacing = waypoint_spacing
         self.max_dist = max_dist
-
-        if image_transform is None:
-            self.image_transform = self._default_transform
-        else:
-            self.image_transform = image_transform
 
         self.learn_angle = learn_angle
         self.normalize = normalize
 
         with open(os.path.join(os.path.dirname(__file__), "data_config.yaml"), "r") as f:
             all_data_config = yaml.safe_load(f)
+            
         assert self.dataset_name in all_data_config
 
         self.data_config = all_data_config[self.dataset_name]
+        dataset_names = list(all_data_config.keys())
+        dataset_names.sort()
+        self.dataset_index = dataset_names.index(self.dataset_name)
         self.to_tensor = transforms.ToTensor()
 
         self.image_size = image_size
-        self.waypoint_spacing = waypoint_spacing
 
         self.negative_mining_pct = negative_mining_pct
-        if self.negative_mining:
-            self.distance_categories.append(-1)
         self.len_traj_pred = len_traj_pred
 
-        self.context_size = context_size
         assert context_type in {
             "temporal",
             "randomized",
             "randomized_temporal",
         }, "context_type must be one of temporal, randomized, randomized_temporal"
         self.context_type = context_type
-        self.end_slack = end_slack
         self.goals_per_obs = goals_per_obs
-        self.obs_type = obs_type
         self.goal_type = goal_type
 
-        # load data/data_config.yaml
-        with open(
-            os.path.join(os.path.dirname(__file__), "data_config.yaml"), "r"
-        ) as f:
-            all_data_config = yaml.safe_load(f)
-        assert (
-            self.dataset_name in all_data_config
-        ), f"Dataset {self.dataset_name} not found in data_config.yaml"
-        dataset_names = list(all_data_config.keys())
-        dataset_names.sort()
-        # use this index to retrieve the dataset name from the data_config.yaml
-        self.dataset_index = dataset_names.index(self.dataset_name)
-        self.data_config = all_data_config[self.dataset_name]
-        self.trajectory_cache = {}
-        self.bag_idx_img_ptr = {}
-        self._load_index()
-        
-        if self.learn_angle:
-            self.num_action_params = 3
-        else:
-            self.num_action_params = 2
+        self.trajectory_cache, self._image_cache = self._load_index(self.dataset_path)
+
+
 
     def __getstate__(self):
         state = self.__dict__.copy()
@@ -160,17 +132,37 @@ class ViNTChopDataset(Dataset):
     
     def __setstate__(self, state):
         self.__dict__ = state
-        self._build_caches()
-
+        # self._build_caches()
+    
+    def __len__(self) -> int:
+        return len(self.trajectory_cache)
+    
     def _load_index(self, path: Path) -> List[Dict[str, Any]]:
         raw = json.loads(path.read_text())
         image_cache: List[Optional[Any]] = []
 
         trajectory_cache = self._build_trajectory_cache(raw)
         print("Cached trajectories:", len(trajectory_cache))
-        image_cache = self._build_image_cache(trajectory_cache)
+        if self.create_image_cache:
+            image_cache = self._build_image_cache(trajectory_cache)
         return trajectory_cache, image_cache
-    
+
+    def _convert_path(self, path_data: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+        
+        def to_tensor(key: str, shape: int = 3) -> torch.Tensor:
+            data = path_data.get(key) or []
+            if not data:
+                return torch.empty((0,) if shape == 1 else (0, shape), dtype=torch.float32)
+            return torch.as_tensor(data, dtype=torch.float32).reshape(-1, shape)
+
+        return {
+            # paths are already resampled in preprocessing; just tensorize
+            "points": to_tensor("points", 3),
+            "yaws": to_tensor("yaws", 1),
+            # "left_boundary": to_tensor("left_boundary"),
+            # "right_boundary": to_tensor("right_boundary"),
+        }
+
     def _build_trajectory_cache(self, json_raw: List[Dict[str, Any]]):
         trajectory_cache = []
         for bag_entry in json_raw:
@@ -193,12 +185,12 @@ class ViNTChopDataset(Dataset):
                     item["image_path"] = sample.get("image_path")
 
                     trajectory_cache.append(item)
-                self.bag_idx_img_ptr[(bag_name, item["frame_idx"])] = sample.get("image_path")
+                self.bag_idx_img_ptr[(bag_name, item["frame_idx"])] = str(self.image_root / sample.get("image_path"))
         return trajectory_cache
 
     def _build_image_cache(self, trajectory_cache: List[Dict[str, Any]], use_tqdm: bool = True):
-        cache_filename = os.path.join(self.data_split_folder, f"dataset_{self.dataset_name}.lmdb")
-
+        cache_filename = os.path.join(self.data_split_folder, f"dataset_{self.dataset_name}_{self.data_split_type}.lmdb")
+        print("LMDB cache filename:", cache_filename)
         # build the LMDB file if missing (write once)
         if not os.path.exists(cache_filename):
             tqdm_iterator = tqdm.tqdm(trajectory_cache, disable=not use_tqdm, dynamic_ncols=True,
@@ -230,6 +222,7 @@ class ViNTChopDataset(Dataset):
 
     def _get_goal(self, idx: int) -> Dict[str, Any]:
 
+        goal_negative = False
         if torch.rand(1).item() >= self.negative_mining_pct:
             p0 = self.trajectory_cache[idx]["path_0"]["points"]
             p1 = self.trajectory_cache[idx]["path_1"]["points"]
@@ -243,7 +236,7 @@ class ViNTChopDataset(Dataset):
                 path_dist = max(p0_dist, p1_dist)
 
             if path_dist > self.max_dist:
-                path_dist = 0.2 * +self.max_dist
+                path_dist = 0.2 * self.max_dist
 
             goal_dist = torch.rand(1).item() * (self.max_dist - path_dist) + path_dist
             bag_name = self.trajectory_cache[idx]["bag"]
@@ -274,9 +267,11 @@ class ViNTChopDataset(Dataset):
                     break
         else:
             goal_idx = np.random.randint(0, len(self.trajectory_cache))
+            goal_negative = True
 
         goal_position = self.trajectory_cache[goal_idx]["position"][:2]
         goal_yaw = self.trajectory_cache[goal_idx]["yaw"]
+        goal_frame_idx = self.trajectory_cache[goal_idx]["frame_idx"]
         image_path = str(self.image_root / self.trajectory_cache[goal_idx]["image_path"])
         goal_image = self._load_image(image_path)
 
@@ -284,67 +279,73 @@ class ViNTChopDataset(Dataset):
             "goal_position": goal_position,
             "goal_yaw": goal_yaw,
             "goal_image": goal_image,
+            "goal_is_negative": goal_negative,
+            "goal_frame_idx": goal_frame_idx
         }
 
-    def _sample_negative(self):
-        """
-        Sample a goal from a (likely) different trajectory.
-        """
-        return self.goals_index[np.random.randint(0, len(self.goals_index))]
-
-    def _build_index(self) -> None:
-        """
-        Generates a list of tuples of (obs_traj_name, goal_traj_name, obs_time, goal_time) for each observation in the dataset
-        """
-        index_to_data_path = os.path.join(
-            self.data_split_folder,
-            f"dataset_dist_{self.min_dist_cat}_to_{self.max_dist_cat}_context_{self.context_type}_n{self.context_size}_slack_{self.end_slack}.pkl",
-        )
-        try:
-            # load the index_to_data if it already exists (to save time)
-            with open(index_to_data_path, "rb") as f:
-                self.index_to_data, self.goals_index = pickle.load(f)
-        except:
-            # if the index_to_data file doesn't exist, create it
-            self.index_to_data, self.goals_index = self._build_index()
-            with open(index_to_data_path, "wb") as f:
-                pickle.dump((self.index_to_data, self.goals_index), f)
-
+    def _get_image_cache(self):
+        # Opens LMDB lazily. When called inside a worker, this creates a worker-local env.
+        if self._image_cache is None:
+            self._image_cache = lmdb.open(
+                self._image_cache_path,
+                readonly=True,
+                lock=False,
+                readahead=False,
+                max_readers=2048
+            )
+        return self._image_cache
+    
     def _load_image(self, image_path: str):
+        # if image_path == "":
         try:
             env = self._get_image_cache()
             with env.begin() as txn:
                 buf = txn.get(image_path.encode())
             if buf is None:
                 # handle missing key gracefully
-                print(f"LMDB missing key {image_path}")
-                return None
+                # print(f"LMDB missing key {image_path}")
+                return img_path_to_data(image_path, self.image_size)
             return img_path_to_data(io.BytesIO(buf), self.image_size)
         except Exception as e:
-            print(f"Failed to load image {image_path}: {e}")
-            return None
+            # print(f"Failed to load image {image_path}: {e}")
+            return img_path_to_data(image_path, self.image_size)
+
 
     def _process_actions(self, path_data: Dict[str, torch.Tensor]):
         pts = path_data.get("points", torch.empty(0, 3, dtype=torch.float32))
         yaws = path_data.get("yaws", torch.empty(0, dtype=torch.float32))
 
         if pts.numel() == 0:
-            return torch.zeros((0, 3), dtype=torch.float32)
+            out_dim = 3 if self.learn_angle else 2
+            return torch.zeros((self.len_traj_pred, out_dim), dtype=torch.float32)
         if yaws.dim() > 1:
             yaws = yaws.squeeze()
         
         assert pts.shape[0] == yaws.shape[0], "Points and yaws must have the same number of waypoints"
-        actions = pts[:self.len_traj_pred*self.waypoint_spacing + 1, :2]  # ego-frame waypoints (x,y)
-        yaws = yaws[:self.len_traj_pred*self.waypoint_spacing + 1]  # ego-frame yaws
-        
+        # Subsample using waypoint spacing, then keep exactly len_traj_pred waypoints
+        actions = pts[::self.waypoint_spacing, :2]
+        yaws = yaws[::self.waypoint_spacing]
+
+        target_len = self.len_traj_pred
+        if actions.shape[0] >= target_len:
+            actions = actions[:target_len]
+            yaws = yaws[:target_len]
+        else:
+            pad = target_len - actions.shape[0]
+            actions = torch.cat([actions, actions[-1:].repeat(pad, 1)], dim=0)
+            if yaws.numel() > 0:
+                yaws = torch.cat([yaws, yaws[-1:].repeat(pad)], dim=0)
+            else:
+                yaws = torch.zeros(target_len, dtype=torch.float32)
+
         if self.learn_angle and yaws.numel() > 0:
             yaw_col = yaws.reshape(-1, 1)
             actions = torch.cat([actions, yaw_col], dim=1)
 
         if self.normalize:
             metric_spacing = self.data_config.get("metric_waypoint_spacing", 1.0)
-            print( "metric_spacing:", metric_spacing )
-            actions = actions / (metric_spacing * self.waypoint_spacing)
+            # print( "metric_spacing:", metric_spacing )
+            actions[:, :2] /= (metric_spacing * self.waypoint_spacing)
         return actions.float()
 
     def _compute_actions(self, action_data: Dict[str, torch.Tensor], 
@@ -355,12 +356,13 @@ class ViNTChopDataset(Dataset):
         neg_actions = self._process_actions(action_data.get("path_1", {}))
 
         goal_pos = to_local_coords_tensor(goal_pos, current_pos, current_yaw)
+
+        if self.normalize:
+            metric_spacing = self.data_config.get("metric_waypoint_spacing", 1.0)
+            goal_pos /= (metric_spacing * self.waypoint_spacing)
         goal_yaw_loc = goal_yaw - current_yaw
 
         return pos_actions, neg_actions, goal_pos, goal_yaw_loc
-    
-    def __len__(self) -> int:
-        return len(self.trajectory_cache)
 
     def __getitem__(self, i: int) -> Tuple[torch.Tensor]:
         """
@@ -375,8 +377,8 @@ class ViNTChopDataset(Dataset):
                 which_dataset (torch.Tensor): index of the datapoint in the dataset [for identifying the dataset for visualization when using multiple datasets]
         """
         sample = self.trajectory_cache[i]
-        cur_pos = sample["position"][:2]                            # w.r.t. world frame
-        cur_yaw = sample["yaw"]
+        curr_pos = sample["position"][:2]                            # w.r.t. world frame
+        curr_yaw = sample["yaw"]
         curr_bag = sample["bag"]
         curr_frame_idx = sample["frame_idx"]
 
@@ -384,49 +386,75 @@ class ViNTChopDataset(Dataset):
         goal_pos = goal["goal_position"]
         goal_yaw = goal["goal_yaw"]
         goal_image = goal["goal_image"]
+        goal_is_negative = goal["goal_is_negative"]
+        goal_frame_idx = goal["goal_frame_idx"]
 
         # Load images
         context = []
         if self.context_type == "temporal":
             # sample the last self.context_size times from interval [0, curr_time)
-            context = list(
-                range(
-                    curr_frame_idx + -self.context_size * self.waypoint_spacing,
-                    curr_frame_idx + 1,
-                    self.waypoint_spacing,
-                )
-            )
+
+            count = 0
+            pointer = 0
+            while True:
+                if count > self.context_size:
+                    break
+                t = curr_frame_idx - pointer * self.waypoint_spacing
+
+                if t < 0:
+                    break
+                image_path = self.bag_idx_img_ptr.get((curr_bag, t), "")
+                if image_path == "":
+                    pointer += 1
+                    continue
+                else:
+                    context.append(image_path)
+                    count += 1
+                    pointer += 1
+            if len(context) < self.context_size + 1:
+                context.extend([context[-1]] * (self.context_size + 1 - len(context)))
+            # reverse to keep chronological order from oldest to newest
+            context = list(reversed(context))
+
         else:
             raise ValueError(f"Invalid context type {self.context_type}")
 
+
         obs_image = torch.cat([
-            self._load_image(self.bag_idx_img_ptr[(curr_bag, t)]) for t in context
+            self._load_image(path) for path in context
         ])
+        # except Exception as e:
+        #     for t in context:
+        #         print(self.bag_idx_img_ptr[(curr_bag, t)])
 
         # Compute actions
-        actions, goal_pos = self._compute_actions(curr_traj_data, curr_time, goal_time)
+        pos_actions, neg_actions, goal_pos, goal_yaw_loc = self._compute_actions(sample, curr_pos, curr_yaw, goal_pos, goal_yaw)
 
         # Compute distances
         if goal_is_negative:
-            distance = self.max_dist_cat
+            distance = self.max_dist
         else:
-            distance = (goal_time - curr_time) // self.waypoint_spacing
-            assert (goal_time - curr_time) % self.waypoint_spacing == 0, f"{goal_time} and {curr_time} should be separated by an integer multiple of {self.waypoint_spacing}"
-        
-        actions_torch = torch.as_tensor(actions, dtype=torch.float32)
+            distance = (goal_frame_idx - curr_frame_idx) // self.waypoint_spacing
+            assert (goal_frame_idx - curr_frame_idx) % self.waypoint_spacing == 0, f"{goal_frame_idx} and {curr_frame_idx} should be separated by an integer multiple of {self.waypoint_spacing}"
+
         if self.learn_angle:
-            actions_torch = calculate_sin_cos(actions_torch)
-        
+            pos_actions = calculate_sin_cos(pos_actions)
+            neg_actions = calculate_sin_cos(neg_actions)
+        else:
+            pos_actions = torch.as_tensor(pos_actions, dtype=torch.float32)
+            neg_actions = torch.as_tensor(neg_actions, dtype=torch.float32)
+
         action_mask = (
-            (distance < self.max_action_distance) and
-            (distance > self.min_action_distance) and
+            (distance < self.max_dist//2) and
+            (distance > (self.max_dist*0.05)//2) and
             (not goal_is_negative)
         )
 
         return (
             torch.as_tensor(obs_image, dtype=torch.float32),
             torch.as_tensor(goal_image, dtype=torch.float32),
-            actions_torch,
+            pos_actions,
+            neg_actions,
             torch.as_tensor(distance, dtype=torch.int64),
             torch.as_tensor(goal_pos, dtype=torch.float32),
             torch.as_tensor(self.dataset_index, dtype=torch.int64),

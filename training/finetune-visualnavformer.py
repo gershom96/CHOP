@@ -1,4 +1,5 @@
-import os
+import importlib
+import os, sys
 import wandb
 import argparse
 import numpy as np
@@ -20,16 +21,16 @@ from diffusers.optimization import get_scheduler
 """
 IMPORT YOUR MODEL HERE
 """
-from vint_train.models.gnm.gnm import GNM
-from vint_train.models.vint.vint import ViNT
-from vint_train.models.vint.vit import ViT
-from vint_train.models.nomad.nomad import NoMaD, DenseNetwork
-from vint_train.models.nomad.nomad_vint import NoMaD_ViNT, replace_bn_with_gn
-from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D
+from policy_sources.visualnav_transformer.train.vint_train.models.gnm.gnm import GNM
+from policy_sources.visualnav_transformer.train.vint_train.models.vint.vint import ViNT
+from policy_sources.visualnav_transformer.train.vint_train.models.vint.vit import ViT
+from policy_sources.visualnav_transformer.train.vint_train.models.nomad.nomad import NoMaD, DenseNetwork
+from policy_sources.visualnav_transformer.train.vint_train.models.nomad.nomad_vint import NoMaD_ViNT, replace_bn_with_gn
+from policy_sources.diffusion_policy.diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D
 
 
-from vint_train.data.vint_dataset import ViNT_Dataset
-from vint_train.training.train_eval_loop import (
+from datasets.visualnav_transformer_dataset import VisualNavTformerCHOPDataset
+from policy_sources.visualnav_transformer.train.vint_train.training.train_eval_loop import (
     train_eval_loop,
     train_eval_loop_nomad,
     load_model,
@@ -38,7 +39,6 @@ from vint_train.training.train_eval_loop import (
 
 def main(config):
     assert config["distance"]["min_dist_cat"] < config["distance"]["max_dist_cat"]
-    assert config["action"]["min_dist_cat"] < config["action"]["max_dist_cat"]
 
     if torch.cuda.is_available():
         os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -92,25 +92,24 @@ def main(config):
 
         for data_split_type in ["train", "test"]:
             if data_split_type in data_config:
-                    dataset = ViNT_Dataset(
-                        data_folder=data_config["data_folder"],
-                        data_split_folder=data_config[data_split_type],
+                    dataset = VisualNavTformerCHOPDataset(
+                        image_root=data_config["image_root"],
+                        dataset_path=data_config[data_split_type],
                         dataset_name=dataset_name,
                         image_size=config["image_size"],
+                        data_split_folder=data_config["data_split_folder"],
+                        data_split_type=data_split_type,
                         waypoint_spacing=data_config["waypoint_spacing"],
-                        min_dist_cat=config["distance"]["min_dist_cat"],
-                        max_dist_cat=config["distance"]["max_dist_cat"],
-                        min_action_distance=config["action"]["min_dist_cat"],
-                        max_action_distance=config["action"]["max_dist_cat"],
-                        negative_mining=data_config["negative_mining"],
+                        max_dist=config["distance"]["max_dist_cat"],
+                        negative_mining_pct=data_config["negative_mining_pct"],
                         len_traj_pred=config["len_traj_pred"],
                         learn_angle=config["learn_angle"],
                         context_size=config["context_size"],
                         context_type=config["context_type"],
-                        end_slack=data_config["end_slack"],
                         goals_per_obs=data_config["goals_per_obs"],
                         normalize=config["normalize"],
                         goal_type=config["goal_type"],
+                        create_image_cache=True
                     )
                     if data_split_type == "train":
                         train_dataset.append(dataset)
@@ -129,7 +128,7 @@ def main(config):
         shuffle=True,
         num_workers=config["num_workers"],
         drop_last=False,
-        persistent_workers=True,
+        persistent_workers=False,
     )
 
     if "eval_batch_size" not in config:
@@ -281,10 +280,18 @@ def main(config):
 
     current_epoch = 0
     if "load_run" in config:
-        load_project_folder = os.path.join("logs", config["load_run"])
-        print("Loading model from ", load_project_folder)
-        latest_path = os.path.join(load_project_folder, "latest.pth")
-        latest_checkpoint = torch.load(latest_path) #f"cuda:{}" if torch.cuda.is_available() else "cpu")
+        sys.modules["vint_train"] = importlib.import_module("policy_sources.visualnav_transformer.train.vint_train")
+        sys.modules["vint_train.models"] = importlib.import_module("policy_sources.visualnav_transformer.train.vint_train.models")
+        sys.modules["vint_train.models.vint"] = importlib.import_module("policy_sources.visualnav_transformer.train.vint_train.models.vint")
+
+        if config.get("load_pretrained", False):
+            print("Loading pretrained model from", config["pretrained_model_path"])
+            latest_checkpoint = torch.load(config["pretrained_model_path"])
+        else:
+            load_project_folder = os.path.join("runs", config["load_run"])
+            print("Loading model from ", load_project_folder)
+            latest_path = os.path.join(load_project_folder, "latest.pth")
+            latest_checkpoint = torch.load(latest_path) #f"cuda:{}" if torch.cuda.is_available() else "cpu")
         load_model(model, config["model_type"], latest_checkpoint)
         if "epoch" in latest_checkpoint:
             current_epoch = latest_checkpoint["epoch"] + 1
@@ -294,7 +301,7 @@ def main(config):
         model = nn.DataParallel(model, device_ids=config["gpu_ids"])
     model = model.to(device)
 
-    if "load_run" in config:  # load optimizer and scheduler after data parallel
+    if config.get("load_opt_sched", False):  # load optimizer and scheduler after data parallel
         if "optimizer" in latest_checkpoint:
             optimizer.load_state_dict(latest_checkpoint["optimizer"].state_dict())
         if scheduler is not None and "scheduler" in latest_checkpoint:
@@ -359,13 +366,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config",
         "-c",
-        default="config/vint.yaml",
+        default="configs/chop_vint_vnt.yaml",
         type=str,
         help="Path to the config file in train_config folder",
     )
     args = parser.parse_args()
 
-    with open("config/defaults.yaml", "r") as f:
+    with open("configs/chop_default_vnt.yaml", "r") as f:
         default_config = yaml.safe_load(f)
 
     config = default_config
@@ -377,7 +384,7 @@ if __name__ == "__main__":
 
     config["run_name"] += "_" + time.strftime("%Y_%m_%d_%H_%M_%S")
     config["project_folder"] = os.path.join(
-        "logs", config["project_name"], config["run_name"]
+        "runs", config["project_name"], config["run_name"]
     )
     os.makedirs(
         config[
@@ -390,7 +397,7 @@ if __name__ == "__main__":
         wandb.init(
             project=config["project_name"],
             settings=wandb.Settings(start_method="fork"),
-            entity="gnmv2", # TODO: change this to your wandb entity
+            entity="gershom-university-of-maryland", 
         )
         wandb.save(args.config, policy="now")  # save the config file
         wandb.run.name = config["run_name"]

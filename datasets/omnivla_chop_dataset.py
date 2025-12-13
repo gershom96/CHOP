@@ -301,7 +301,7 @@ class OmniVLAChopDataset(torch.utils.data.Dataset):
             path_dist = max(p0_dist, p1_dist)
 
         if path_dist > self.max_dist:
-            path_dist = 0.2 * +self.max_dist
+            path_dist = 0.2 * self.max_dist
 
         goal_dist = torch.rand(1).item() * (self.max_dist - path_dist) + path_dist
         bag_name = self.trajectory_cache[idx]["bag"]
