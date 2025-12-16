@@ -741,7 +741,7 @@ def train_omnivla(cfg: OmniVLAConfig) -> None:
     torch.cuda.empty_cache()
     print("World size", world_size, "rank", device_id)
 
-    with open("./configs/dataset_config.yaml", "r") as f:
+    with open("./configs/chop_omnivla.yaml", "r") as f:
         config = yaml.safe_load(f)
     # Initialize wandb logging
     if distributed_state.is_main_process:

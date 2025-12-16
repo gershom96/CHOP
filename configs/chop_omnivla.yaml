@@ -1,0 +1,12 @@
+# parameters for training dataset
+image_size: [224, 224] # width, height
+context_type: temporal
+normalize: True
+learn_angle: True
+num_workers: 10
+
+datasets_scand_a:
+  data_root: ./data/lora-data
+  train: ./data/lora-data/train.json
+  test: ./data/lora-data/test.json
+  image_root: /fs/gamma-datasets/SCAND/images
