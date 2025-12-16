@@ -6,11 +6,11 @@ run_name: gnm
 # training setup
 use_wandb: True # set to false if you don't want to log to wandb
 train: True
-batch_size: 2048
-eval_batch_size: 2048
+batch_size: 8192
+eval_batch_size: 8192
 epochs: 30
-gpu_ids: [0] 
-num_workers: 4
+gpu_ids: [0, 1, 2, 3] 
+num_workers: 8
 lr: 7e-4
 optimizer: adam
 seed: 0
@@ -57,7 +57,7 @@ datasets:
     data_root: ./data/lora-data
     train: ./data/lora-data/train.json
     test: ./data/lora-data/test.json
-    image_root: /media/beast-gamma/Media/Datasets/SCAND/images
+    image_root: /fs/gamma-datasets/SCAND/images
     goals_per_obs: 1 # how many goals are sampled per observation
     negative_mining: True # negative mining from the ViNG paper (Shah et al.)  
     data_split_folder: ./data/lora-data/
