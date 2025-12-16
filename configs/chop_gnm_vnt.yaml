@@ -1,13 +1,13 @@
 # NOTE: this model uses private datasets
 
-project_name: vint-release
+project_name: chop-gnm
 run_name: gnm
 
 # training setup
 use_wandb: True # set to false if you don't want to log to wandb
 train: True
-batch_size: 400
-eval_batch_size: 400
+batch_size: 2048
+eval_batch_size: 2048
 epochs: 30
 gpu_ids: [0] 
 num_workers: 4
@@ -47,15 +47,22 @@ learn_angle: True
 image_size: [85, 64] # width, height
 goal_type: "image"
 
+load_run: True
+load_pretrained: True
+pretrained_model_path: ./weights/gnm.pth
+load_opt_sched: False
 
 datasets:
   scand_a:
-    data_folder: /home/<username>/vint_dataset/recon
-    train: /home/<username>/data_splits/recon/train/ # path to train folder with traj_names.txt
-    test: /home/<username>/data_splits/recon/test/ # path to test folder with traj_names.txt
-    end_slack: 3 # because many trajectories end in collisions
+    data_root: ./data/lora-data
+    train: ./data/lora-data/train.json
+    test: ./data/lora-data/test.json
+    image_root: /media/beast-gamma/Media/Datasets/SCAND/images
     goals_per_obs: 1 # how many goals are sampled per observation
-    negative_mining: True # negative mining from the ViNG paper (Shah et al.)
+    negative_mining: True # negative mining from the ViNG paper (Shah et al.)  
+    data_split_folder: ./data/lora-data/
+    negative_mining_pct: 0.05
+    metric_waypoint_spacing: 0.38
 
 # logging stuff
 ## =0 turns off

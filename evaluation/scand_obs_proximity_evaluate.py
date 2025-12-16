@@ -241,9 +241,6 @@ class ProximityEvaluator():
         pos = np.array([msg.pose.pose.position.x, msg.pose.pose.position.y])
         return pos, yaw
     
-    def preprocess_data(self):
-        return 
-
     def sample_goal_indices(self):
         goal_dist = np.random.uniform(self.min_distance, self.max_distance, size=len(self.frames))
         for i in range(self.context_frames, len(self.frames)-1):

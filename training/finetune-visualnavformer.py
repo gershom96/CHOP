@@ -366,7 +366,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config",
         "-c",
-        default="configs/chop_vint_vnt.yaml",
+        default="configs/chop_gnm_vnt.yaml",
         type=str,
         help="Path to the config file in train_config folder",
     )
