@@ -70,4 +70,4 @@ dependencies = [
 
 [tool.setuptools]
 # Make the internal code importable (e.g., `import policy_sources`)
-packages = ["datasets", "testing", "policy_sources"]
+packages = ["datasets", "testing", "policy_sources", "evaluation"]

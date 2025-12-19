@@ -157,19 +157,20 @@ class EvalRunner:
 
     def _save_paths_json(self, bag_name: str):
         stem = Path(bag_name).stem
-        output_file = self.output_path / f"{stem}_paths.json"
+        output_file = self.output_path / "trajectories"/ self.model_name / f"{stem}_paths.json"
         data = {
             "bag": stem,
-            "frames": []
+            "frames": {}
         }
         for frame in self.frames:
             frame_dict = {
                 "frame_idx": frame.frame_idx,
+                "img_path": frame.image_path,
                 "path_ft": frame.path_ft.tolist() if frame.path_ft is not None else None,
                 "path_bl": frame.path_bl.tolist() if frame.path_bl is not None else None,
                 "path_gt": frame.path_gt.tolist() if frame.path_gt is not None else None,
             }
-            data["frames"].append(frame_dict)
+            data["frames"][frame.timestamp] = frame_dict
 
         with open(output_file, "w") as f:
             json.dump(data, f, indent=4)
