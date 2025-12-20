@@ -18,7 +18,7 @@ class AlignmentEvaluator(BaseEvaluator):
 
         alignments = []
 
-        for frame in tqdm(self.frames, desc=f"Eval {self.bag_name}", unit="frame"):
+        for frame in tqdm(self.frames, desc=f"Eval {self._eval_name} {self.bag_name}", unit="frame"):
             if frame.goal_idx == -1:
                 continue
 
