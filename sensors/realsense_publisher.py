@@ -1,19 +1,28 @@
 import rclpy
 from rclpy.node import Node
 from cv_bridge import CvBridge
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CompressedImage
 import pyrealsense2 as rs
-# import cv2
+import cv2
 import numpy as np
-"""
-https://answers.ros.org/question/359029/
+import argparse
 
-requires python 3.8, a different conda env is created for this script.
-
-"""
 
 class CustomPublisher(Node):
-    def __init__(self):
+    """
+    Docstring for CustomPublisher
+    - args.raw_img: we will publish the raw img
+    - args.compress_img: we will publish the compressed img
+    
+    the depth image is let unused at the moment but can be extracted from:
+    depth_image = np.asanyarray(depth_frame.get_data())
+
+    references:
+    https://github.com/realsenseai/librealsense/blob/master/wrappers/python/examples/opencv_viewer_example.py
+    https://answers.ros.org/question/359029/
+     - may require python3.8 to play nice with foxy
+    """
+    def __init__(self, args):
         super().__init__('custom_publisher')
 
         # Configure depth and color streams
@@ -41,9 +50,10 @@ class CustomPublisher(Node):
         # Start streaming
         pipeline.start(config)
         self.pipeline = pipeline
-
-        # ros
-        self.publisher_ = self.create_publisher(Image, 'camera/image_raw', 10)
+        if args.compress_img:
+            self.publisher_compressed = self.create_publisher(CompressedImage, 'camera/image_raw/compressed', 10)
+        if args.raw_img:
+            self.publisher_normal = self.create_publisher(Image, 'camera/image_raw', 10)
         self.bridge = CvBridge()
         try:
             while True:
@@ -54,13 +64,25 @@ class CustomPublisher(Node):
                 color_frame = frames.get_color_frame()
                 if not depth_frame or not color_frame:
                     pass
-                    # continue
                 else:
-
                     # Convert images to numpy arrays
                     # depth_image = np.asanyarray(depth_frame.get_data())
                     frame = np.asanyarray(color_frame.get_data())
-                    self.publisher_.publish(self.bridge.cv2_to_imgmsg(frame))
+                    
+                    if args.compress_img:
+                        format = "jpg"
+                        img_encode = cv2.imencode('.jpg', frame)[1]
+                        byte_encode = np.array(img_encode).tobytes()
+
+                        comp_img = CompressedImage()
+                        comp_img.header.stamp = self.get_clock().now().to_msg()
+                        comp_img.format = format
+                        comp_img.data = byte_encode
+
+                        self.publisher_compressed.publish(comp_img)
+                    if args.raw_img:
+                        self.publisher_normal.publish(self.bridge.cv2_to_imgmsg(frame))
+                    
                     self.get_logger().info(f'image size {frame.shape}')
 
         finally:
@@ -70,9 +92,14 @@ class CustomPublisher(Node):
         
 
 
-def main(args=None):
-    rclpy.init(args=args)
-    custom_publisher = CustomPublisher()
+def main():
+    parser = argparse.ArgumentParser(description="realsense publisher")
+    parser.add_argument("--disable_raw", action="store_false", dest="raw_img", help="Disable publishing raw images")
+    parser.add_argument("--disable_compress", action="store_false", dest="compress_img", help="Disable publishing compressed images")
+    args = parser.parse_args()
+    print("args:", args)
+    rclpy.init(args=None)
+    custom_publisher = CustomPublisher(args)
     rclpy.spin(custom_publisher)
     custom_publisher.destroy_node()
     rclpy.shutdown()
