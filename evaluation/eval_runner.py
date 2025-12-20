@@ -159,6 +159,7 @@ class EvalRunner:
     def _save_paths_json(self, bag_name: str):
         stem = Path(bag_name).stem
         output_file = self.output_path / "trajectories"/ self.model_name / f"{stem}_paths.json"
+        output_file.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "bag": stem,
             "frames": {}
@@ -348,16 +349,18 @@ class EvalRunner:
         return pos, yaw
 
     def prefill_paths(self, finetuned: bool = True):
-        min_clearances = []
         model, noise_scheduler = self.load_model(finetuned=finetuned)
 
-        for i, frame in enumerate(tqdm(self.frames, desc=f"Eval {self.bag_name}", unit="frame")):
+        for i, frame in enumerate(tqdm(self.frames, desc=f"Prefill {self.bag_name}", unit="frame")):
             if frame.goal_idx == -1:
                 continue
             
             goal_frame = self.frames[frame.goal_idx]
             path_xy = self.run_inference(model, frame, goal_frame, noise_scheduler=noise_scheduler)
-
+            if path_xy is None:
+                raise RuntimeError("Inference failed to produce a path.")
+            elif path_xy.size == 0:
+                raise RuntimeError("Inference produced an empty path.")
             if finetuned:
                 self.frames[i].path_ft = path_xy
             else:
@@ -370,6 +373,10 @@ class EvalRunner:
 
         self.timestamps = self._get_timestamps_from_expert_annotations()
 
+        if len(self.timestamps) == 0:
+            print(f"[WARN] No timestamps found in expert annotations for {self.bag_name}, skipping bag.")
+            return
+
         print(f"\n=== Processing {self.bag_name} ===")
 
         if "Jackal" in self.bag_name:
@@ -380,7 +387,6 @@ class EvalRunner:
             self.image_topic = "/image_raw/compressed"
             self.laserscan_topic = "/scan"
             self.odom_topic = "/odom"
-        print(f"[INFO] Using image topic: {self.image_topic}")
 
         # print(self.timestamps[:10])
         skip_count = 0
@@ -397,6 +403,8 @@ class EvalRunner:
             cum_distance = 0.0
             for i, (topic, msg, t) in enumerate(bag.read_messages(topics=[self.image_topic, self.laserscan_topic, self.odom_topic])):
                 # print(int(str(t)), int(self.timestamps[timestamp_counter]), timestamp_counter, len(self.timestamps))
+                if timestamp_counter >= len(self.timestamps):
+                    break
                 if(int(str(t)) > int(self.timestamps[timestamp_counter]) and pos is None):
                     timestamp_counter += 1
                     skip_count += 1
@@ -406,7 +414,6 @@ class EvalRunner:
                     cv_img = self.process_image(msg)
                 elif topic == self.laserscan_topic:
                     scan_data = self.process_laserscan_msg(msg)
-
                 if str(t) == str(self.timestamps[timestamp_counter]):
                     if scan_data is not None and pos is not None and yaw is not None:
                         if last_pos is None:
@@ -443,11 +450,8 @@ class EvalRunner:
                         )
                         timestamp_counter += 1
                         count += 1
-                if timestamp_counter >= len(self.timestamps):
-                    break
             if self.sample_goals:
                 self.sample_goal_indices()
-                self.sample_goals = False
     
         print(f"[INFO] Loaded {len(self.frames)} frames from bag after skipping {skip_count} frames.")
         if not self.frames:
@@ -458,7 +462,7 @@ class EvalRunner:
         self.prefill_paths(finetuned=True)
         self.prefill_paths(finetuned=False)
 
-    def run(self):
+    def run(self, processed: list):
         bag_files = sorted(glob.glob(os.path.join(self.bag_dir, "*.bag")))
         pref_files = sorted(glob.glob(os.path.join(self.pref_annotations_path, "*.json")))
         pref_dict = defaultdict(bool)
@@ -475,10 +479,9 @@ class EvalRunner:
 
         for bp in bag_files:
             self.bag_name = Path(os.path.basename(bp)).stem
-            if test_train_bags.get(self.bag_name, "train") == "train" or not pref_dict.get(self.bag_name, False):
+            if test_train_bags.get(self.bag_name, "train") == "train" or not pref_dict.get(self.bag_name, False) or self.bag_name in processed:
                 print(f"[INFO] Skipping training bag: {self.bag_name}")
                 continue
-            print(f"[INFO] Processing bag: {self.bag_name}")
             self.preprocess_bag(bp)
 
             for evaluator in self.evaluators:
@@ -501,6 +504,7 @@ if __name__ == "__main__":
 
     evaluators = [proximity_evaluator, goal_distance_evaluator, alignment_evaluator]
 
+    processed = []
     runner = EvalRunner(
         bag_dir=bag_dir,
         output_path=output_paths,
@@ -514,4 +518,4 @@ if __name__ == "__main__":
         max_distance=20.0,
         evaluators=evaluators
     )
-    runner.run()
+    runner.run(processed)

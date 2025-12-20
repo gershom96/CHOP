@@ -50,8 +50,8 @@ class BaseEvaluator():
             }
             f.write(json.dumps(json_record) + "\n")  # one object per line
 
-
-            print(f"[INFO] Evaluation results for {self.bag_name} {self._eval_name}: {mean:.4f} ± {std:.4f}\n")
+            mode = "finetuned" if finetuned else "pretrained"
+            print(f"[INFO] Evaluation results for {self.bag_name} {self._eval_name} {mode}: {mean:.4f} ± {std:.4f}\n")
 
     def calculate_statistics(self, evaluations: list):
         if not evaluations:

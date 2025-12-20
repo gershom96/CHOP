@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 from scipy.spatial.transform import Rotation as R
+from tqdm import tqdm
 import rosbag
 
 from evaluation.base_evaluator import BaseEvaluator
@@ -26,7 +27,7 @@ class GoalDistanceEvaluator(BaseEvaluator):
         print(f"[INFO] Analyzing goal distance for {self.bag_name}")
         distances = []
 
-        for frame in self.frames:
+        for frame in tqdm(self.frames, desc=f"Eval {self._eval_name} {self.bag_name}", unit="frame"):
             if frame.goal_idx == -1:
                 continue
 
