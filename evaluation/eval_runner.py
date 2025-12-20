@@ -14,6 +14,8 @@ import argparse
 import yaml
 import json
 import os
+import sys
+import importlib
 import glob
 from collections import defaultdict
 from typing import Optional, Dict, List
@@ -109,7 +111,7 @@ class EvalRunner:
         self.sample_goals = sample_goals
         self.max_distance = max_distance
         self.min_distance = min_distance
-        self.inference_out = inference_out
+        self.inference_out = Path(inference_out)
 
         self.output_path = Path(output_path)
         self.output_path.mkdir(parents=True, exist_ok=True)
@@ -160,7 +162,7 @@ class EvalRunner:
 
     def _save_paths_json(self, bag_name: str):
         stem = Path(bag_name).stem
-        output_file = self.inference_out / "trajectories"/ self.model_name / f"{stem}_paths.json"
+        output_file = self.inference_out / self.model_name / f"{stem}_paths.json"
         output_file.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "bag": stem,
@@ -187,6 +189,10 @@ class EvalRunner:
         
         if self.config.get("model_type") in {"vint", "gnm", "nomad"}:
             ckpt_path = self.config["chop_finetuned_path"] if finetuned else self.config["pretrained_model_path"]
+            sys.modules["vint_train"] = importlib.import_module("policy_sources.visualnav_transformer.train.vint_train")
+            sys.modules["vint_train.models"] = importlib.import_module("policy_sources.visualnav_transformer.train.vint_train.models")
+            sys.modules["vint_train.models.vint"] = importlib.import_module("policy_sources.visualnav_transformer.train.vint_train.models.vint")
+
             model = deployment_load_model(str(ckpt_path), self.config, device)
 
             if self.model_name == "nomad":
@@ -276,6 +282,7 @@ class EvalRunner:
                     ).prev_sample
             naction = get_action(naction)
             path_xy = naction[0, :, :2].detach().cpu().numpy()
+            path_xy = path_xy * 0.38 # Scale to meter To.do: make this configurable
         elif self.model_name == "omnivla":
             cur_img = PILImage.fromarray(frame.image[:, :, ::-1]) #BGR to RGB
             cur_pos = frame.pos
@@ -419,14 +426,14 @@ class EvalRunner:
                 elif topic == self.laserscan_topic:
                     scan_data = self.process_laserscan_msg(msg)
                 if str(t) == str(self.timestamps[timestamp_counter]):
-                    if scan_data is not None and pos is not None and yaw is not None:
+                    if cv_img is not None and scan_data is not None and pos is not None and yaw is not None:
                         if last_pos is None:
                             cum_distance = 0.0
                         else:
                             cum_distance += np.linalg.norm(pos - last_pos)
                         last_pos = pos
                         ranges, angle_min, angle_increment, range_min, range_max = scan_data
-                        gt_path = self.pref_annotations.get("annotations_by_stamp", {}).get(str(t), {}).get("paths", None).get("3", None).get("points", None)
+                        gt_path = self.pref_annotations.get("annotations_by_stamp", {}).get(str(t), {}).get("paths", {}).get("3", {}).get("points", None)
                         if gt_path is not None:
                             gt_path = np.array(gt_path, dtype=np.float32)
                             gt_path = _resample_path(gt_path, self.num_points + 1)[1:]  # Resample and drop origin
@@ -434,26 +441,28 @@ class EvalRunner:
                         image_filename = f"img_{t}.png"
                         image_path = f"{stem}/img_{str(t)}.png"
 
-                        assert (self.image_root / stem / image_filename).is_file(), f"Missing image file: {self.image_root / stem / image_filename}"
-                        self.frames.append(
-                            FrameItem(
-                                frame_idx=count,
-                                image=cv_img,
-                                image_path=image_path,
-                                timestamp=int(str(t)),
-                                laserscan=ranges,
-                                angle_min=angle_min,
-                                angle_increment=angle_increment,
-                                range_min=range_min,
-                                range_max=range_max,
-                                path_gt=gt_path,
-                                pos=pos,
-                                yaw=yaw,
-                                cum_distance=cum_distance,
+                        if (self.image_root / stem / image_filename).is_file():
+                                
+                            self.frames.append(
+                                FrameItem(
+                                    frame_idx=count,
+                                    image=cv_img,
+                                    image_path=image_path,
+                                    timestamp=int(str(t)),
+                                    laserscan=ranges,
+                                    angle_min=angle_min,
+                                    angle_increment=angle_increment,
+                                    range_min=range_min,
+                                    range_max=range_max,
+                                    path_gt=gt_path,
+                                    pos=pos,
+                                    yaw=yaw,
+                                    cum_distance=cum_distance,
+                                )
                             )
-                        )
+                            count += 1
                         timestamp_counter += 1
-                        count += 1
+                        
             if self.sample_goals:
                 self.sample_goal_indices()
     
@@ -499,7 +508,7 @@ if __name__ == "__main__":
 
     output_paths = "./outputs/evals/"
     inference_out = "./outputs/trajectories/"
-    model_name = "omnivla"
+    model_name = "vint"
     dataset_split = "./data/annotations/test-train-split.json"
     pref_annotations_path = "./data/annotations/preferences"
     bag_dir = "/media/beast-gamma/Media/Datasets/SCAND/rosbags/"
@@ -511,6 +520,15 @@ if __name__ == "__main__":
     evaluators = [proximity_evaluator, goal_distance_evaluator, alignment_evaluator]
 
     # processed = ["A_Jackal_Fountain_Library_Fri_Oct_29_9", "A_Jackal_REC_Abandon_Sat_Nov_13_92", "A_Spot_AHG_AHG_Mon_Nov_8_27"]
+    # processed = ["A_Jackal_Fountain_Library_Fri_Oct_29_9", "A_Jackal_REC_Abandon_Sat_Nov_13_92", 
+    #              "A_Spot_AHG_AHG_Mon_Nov_8_27", "A_Spot_AHG_Library_Fri_Nov_5_21", 
+    #              "A_Spot_Bass_Rec_Fri_Nov_26_126", "A_Spot_Dobie_Dobie_Thu_Nov_11_73",
+    #              "A_Spot_EER_OsCafe_Tue_Nov_9_39", "A_Spot_GDC_AHG_Thu_Nov_18_124", 
+    #              "A_Spot_Jester_Jester_Wed_Nov_10_63", "A_Spot_Library_AHG_Mon_Nov_8_28",
+    #              "A_Spot_Library_Fountain_Fri_Nov_12_82", "A_Spot_Library_MLK_Thu_Nov_18_123",
+    #              "A_Spot_Library_MLK_Thu_Nov_18_123", "B_Spot_AHG_Library_Tue_Nov_9_34", 
+    #              "B_Spot_Fountain_Union_Tue_Nov_9_36", "B_Spot_JCL_JCL_Mon_Nov_15_108", 
+    #              "B_Spot_Library_Jester_Thu_Nov_11_75", "A_Spot_Security_NHB_Wed_Nov_10_54" ]
     processed = []
 
     runner = EvalRunner(
