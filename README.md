@@ -29,3 +29,5 @@ pip install -e .
 - `scripts/finetune_policy.py`: load a policy from `policy_sources/`, attach LoRA, and finetune vs. the dataset.
 - `scripts/evaluate_policy.py`: load a checkpoint and compute metrics on val/test splits.
 - `scripts/visualize_counterfactuals.py`: sanity-check counterfactual annotations.
+
+#
