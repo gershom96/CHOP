@@ -88,6 +88,7 @@ class EvalRunner:
         self,
         bag_dir: str,
         output_path: str,
+        inference_out: str,
         test_train_split_path: str,
         pref_annotations_path: str,
         model: str,
@@ -108,6 +109,7 @@ class EvalRunner:
         self.sample_goals = sample_goals
         self.max_distance = max_distance
         self.min_distance = min_distance
+        self.inference_out = inference_out
 
         self.output_path = Path(output_path)
         self.output_path.mkdir(parents=True, exist_ok=True)
@@ -158,7 +160,7 @@ class EvalRunner:
 
     def _save_paths_json(self, bag_name: str):
         stem = Path(bag_name).stem
-        output_file = self.output_path / "trajectories"/ self.model_name / f"{stem}_paths.json"
+        output_file = self.inference_out / "trajectories"/ self.model_name / f"{stem}_paths.json"
         output_file.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "bag": stem,
@@ -404,10 +406,12 @@ class EvalRunner:
             for i, (topic, msg, t) in enumerate(bag.read_messages(topics=[self.image_topic, self.laserscan_topic, self.odom_topic])):
                 # print(int(str(t)), int(self.timestamps[timestamp_counter]), timestamp_counter, len(self.timestamps))
                 if timestamp_counter >= len(self.timestamps):
+                    # print(len(self.timestamps), timestamp_counter)
                     break
                 if(int(str(t)) > int(self.timestamps[timestamp_counter]) and pos is None):
-                    timestamp_counter += 1
-                    skip_count += 1
+                    while (int(str(t)) > int(self.timestamps[timestamp_counter]) and timestamp_counter < len(self.timestamps)):
+                        timestamp_counter += 1
+                        skip_count += 1
                 if topic == self.odom_topic:
                     pos, yaw = self.process_odom(msg)
                 elif topic == self.image_topic:
@@ -422,7 +426,7 @@ class EvalRunner:
                             cum_distance += np.linalg.norm(pos - last_pos)
                         last_pos = pos
                         ranges, angle_min, angle_increment, range_min, range_max = scan_data
-                        gt_path = self.pref_annotations.get("annotations_by_stamp", {}).get(str(t), {}).get("paths", None).get("0", None).get("points", None)
+                        gt_path = self.pref_annotations.get("annotations_by_stamp", {}).get(str(t), {}).get("paths", None).get("3", None).get("points", None)
                         if gt_path is not None:
                             gt_path = np.array(gt_path, dtype=np.float32)
                             gt_path = _resample_path(gt_path, self.num_points + 1)[1:]  # Resample and drop origin
@@ -455,7 +459,8 @@ class EvalRunner:
     
         print(f"[INFO] Loaded {len(self.frames)} frames from bag after skipping {skip_count} frames.")
         if not self.frames:
-            print("[WARN] No frames after undersampling.")
+            print("[WARN] No frames.")
+            # raise Exception
             return
         
         # Filling paths from models. 
@@ -493,6 +498,7 @@ class EvalRunner:
 if __name__ == "__main__":
 
     output_paths = "./outputs/evals/"
+    inference_out = "./outputs/trajectories/"
     model_name = "omnivla"
     dataset_split = "./data/annotations/test-train-split.json"
     pref_annotations_path = "./data/annotations/preferences"
@@ -504,10 +510,13 @@ if __name__ == "__main__":
 
     evaluators = [proximity_evaluator, goal_distance_evaluator, alignment_evaluator]
 
+    # processed = ["A_Jackal_Fountain_Library_Fri_Oct_29_9", "A_Jackal_REC_Abandon_Sat_Nov_13_92", "A_Spot_AHG_AHG_Mon_Nov_8_27"]
     processed = []
+
     runner = EvalRunner(
         bag_dir=bag_dir,
         output_path=output_paths,
+        inference_out=inference_out,
         test_train_split_path=dataset_split,
         pref_annotations_path=pref_annotations_path,
         model=model_name,
