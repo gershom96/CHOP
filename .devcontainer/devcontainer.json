@@ -12,7 +12,9 @@
   "mounts": [
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.bash_history,target=/home/vscode/.bash_history,type=bind",
     "source=/dev/bus/usb,target=/dev/bus/usb,type=bind",
-],
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.cache/conda,target=/home/ubuntu/.cache/conda,type=bind",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.cache/pip,target=/home/ubuntu/.cache/pip,type=bind"
+  ],
 "features": {
 	"ghcr.io/devcontainers/features/conda:1": {
     "version": "latest"

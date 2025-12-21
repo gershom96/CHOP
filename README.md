@@ -18,6 +18,9 @@ conda create -n chop python=3.10 -y
 conda activate chop
 git submodule update --init --recursive
 pip install -e .
+# likely needed in ros1:
+pip install huggingface-hub==0.25.2 --no-dependencies
+export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libffi.so.7
 ```
 
 ## Using third-party policy code
@@ -30,4 +33,7 @@ pip install -e .
 - `scripts/evaluate_policy.py`: load a checkpoint and compute metrics on val/test splits.
 - `scripts/visualize_counterfactuals.py`: sanity-check counterfactual annotations.
 
-#
+## Misc:
+### realsense camera documentation
+https://github.com/realsenseai/realsense-ros?tab=readme-ov-file#installation-on-ubuntu
+https://github.com/realsenseai/librealsense/blob/master/doc/installation.md
