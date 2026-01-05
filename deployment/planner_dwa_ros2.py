@@ -255,9 +255,9 @@ class Planner(Node):
             x_vals = v * t_vals
             y_vals = np.zeros_like(t_vals)
         else:
-            R = v / w
-            x_vals = R * np.sin(w * t_vals)
-            y_vals = R * (1 - np.cos(w * t_vals))
+            turn_radius = v / w
+            x_vals = turn_radius * np.sin(w * t_vals)
+            y_vals = turn_radius * (1 - np.cos(w * t_vals))
 
         c = np.cos(self.yaw)
         s = np.sin(self.yaw)
