@@ -247,7 +247,7 @@ class Planner(Node):
 
         #  [vmin, vmax, yawrate min, yawrate max]
         dw = [max(Vs[0], Vd[0]), max(self.config.min_speed, min(Vs[1], Vd[1])),
-              max(Vs[2], Vd[2]), max(min(Vs[3], Vd[3]), self.config.max_yawrate)]
+              max(Vs[2], Vd[2]), max(min(Vs[3], Vd[3]), self.config.min_yawrate)]
 
         return dw
     
