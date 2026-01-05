@@ -1,9 +1,5 @@
 # !/usr/bin/env python3
 
-# Author: Connor McGuile
-# Latest author: Gershom Seneviratne
-# Feel free to use in any way.
-
 # A custom Dynamic Window Approach implementation for use with Turtlebot.
 # Obstacles are registered by a front-mounted laser and stored in a set.
 # If, for testing purposes or otherwise, you do not want the laser to be used,
