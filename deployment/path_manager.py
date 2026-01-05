@@ -65,10 +65,12 @@ class PathManagerNode(Node):
                             )
         # ---- Params ----
         self.declare_parameter("base_frame", "base_link")
+        self.declare_parameter("world_frame", "odom")
         self.declare_parameter("behind_margin", 0.0)    # pop if x < -margin
         self.declare_parameter("reach_radius", 0.1)     # pop if dist < radius (extra robustness)
 
         self.base_frame = self.get_parameter("base_frame").value
+        self.world_frame = self.get_parameter("world_frame").value
         self.behind_margin = float(self.get_parameter("behind_margin").value)
         self.reach_radius = float(self.get_parameter("reach_radius").value)
 
@@ -164,17 +166,24 @@ class PathManagerNode(Node):
         with self._lock:
             self._path_start_xy = self._path_start_xy[keep, :]
         pts_cur = pts_cur[keep, :]
-        self._publish_if_available(pts_cur)
 
-    def _publish_if_available(self, pts_cur: np.ndarray):
+        # current frame -> world frame
+        pts_w = []
+        T_w_c = T_c
+        pts_c_h = np.vstack([pts_cur.T, np.ones(pts_cur.shape[0])])  # (3,N)
+        pts_w   = (T_w_c @ pts_c_h)[:2, :].T  # (N,2)
 
-        if pts_cur.size == 0:
+        self._publish_if_available(pts_w)
+
+    def _publish_if_available(self, pts_world: np.ndarray):
+
+        if pts_world.size == 0:
             return
-        gx, gy = pts_cur[0]
+        gx, gy = pts_world[0]
 
         goal = PoseStamped()
         goal.header.stamp = self.get_clock().now().to_msg()
-        goal.header.frame_id = self.base_frame
+        goal.header.frame_id = self.world_frame
         goal.pose.position.x = float(gx)
         goal.pose.position.y = float(gy)
         goal.pose.position.z = 0.0
@@ -183,11 +192,11 @@ class PathManagerNode(Node):
 
         path_msg = Path()
         path_msg.header = goal.header
-        for x_c, y_c in pts_cur:
+        for x_w, y_w in pts_world:
             ps = PoseStamped()
             ps.header = goal.header
-            ps.pose.position.x = float(x_c)
-            ps.pose.position.y = float(y_c)
+            ps.pose.position.x = float(x_w)
+            ps.pose.position.y = float(y_w)
             ps.pose.orientation.w = 1.0
             path_msg.poses.append(ps)
         self.pub_active_path.publish(path_msg)
