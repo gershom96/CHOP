@@ -213,7 +213,10 @@ class Planner(Node):
         self.v_x = msg.twist.twist.linear.x
         self.w_z = msg.twist.twist.angular.z
 
-        self.X = np.array([self.x, self.y, self.yaw, self.v_x, self.w_z])
+        self.X[0] = self.x
+        self.X[1] = self.y
+        self.X[2] = self.yaw
+
         self.odom_assigned = True
 
     def atGoal(self):
@@ -243,8 +246,8 @@ class Planner(Node):
             self.X[4] + self.config.max_dyawrate * self.config.dt]
 
         #  [vmin, vmax, yawrate min, yawrate max]
-        dw = [max(Vs[0], Vd[0]), min(Vs[1], Vd[1]),
-                max(Vs[2], Vd[2]), min(Vs[3], Vd[3])]
+        dw = [max(Vs[0], Vd[0]), max(self.config.min_speed, min(Vs[1], Vd[1])),
+              max(Vs[2], Vd[2]), max(min(Vs[3], Vd[3]), self.config.max_yawrate)]
 
         return dw
     
