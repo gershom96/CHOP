@@ -207,7 +207,7 @@ class Planner(Node):
         self.x = msg.pose.pose.position.x
         self.y = msg.pose.pose.position.y
         rot_q = msg.pose.pose.orientation
-        roll,pitch,yaw = R.from_quaternion([rot_q.x, rot_q.y, rot_q.z, rot_q.w]).as_euler('xyz')
+        roll,pitch,yaw = R.from_quat([rot_q.x, rot_q.y, rot_q.z, rot_q.w]).as_euler('xyz')
         self.yaw = yaw
 
         self.v_x = msg.twist.twist.linear.x
