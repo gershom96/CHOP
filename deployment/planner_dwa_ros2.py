@@ -33,6 +33,7 @@ class LaserScanConfig:
     range_min: float = 0.25         # meters
     range_max: float = 4.0          # meters
     scan_skip: int = 1              # idxs
+    laser_assigned: bool = False
 
 class RobotConfig():
 
@@ -45,8 +46,8 @@ class RobotConfig():
     v_reso = 0.005          # [m/s]
     yawrate_reso = 0.01    # [rad/s]
 
-    dt = 0.025             # [s]
-    predict_time = 0.5     # [s]
+    dt = 0.1             # [s]
+    predict_time = 1.5     # [s]
 
     to_goal_cost_gain = 1  # lower = detour
     speed_cost_gain = 100     # lower = faster
@@ -100,8 +101,8 @@ class Planner(Node):
 
         self.odom_assigned = False
 
-        self.goalX = None
-        self.goalY = None
+        self.goalX = 2
+        self.goalY = 1
         self._goal_req_sent = False
 
     # ------------ ROS callbacks ---------------
@@ -187,12 +188,24 @@ class Planner(Node):
         Vectorized obstacle extraction from LaserScan.
         Assumes config has x, y, th fields for the robot pose in world frame.
         """
+
+        if not self.laserscan_config.laser_assigned:
+            self.laserscan_config.angle_min = msg.angle_min
+            self.laserscan_config.angle_max = msg.angle_max
+            self.laserscan_config.range_min = msg.range_min
+            self.laserscan_config.range_max = msg.range_max
+            self.laserscan_config.angle_increment = msg.angle_increment
+            self.laserscan_config.laser_assigned = True
+            return
         ranges = np.asarray(msg.ranges, dtype=float)
         deg = ranges.shape[0]
-        self.obst = np.zeros((0,2), dtype=float)
+        self.obst = np.zeros((0, 2), dtype=float)
+
         if deg == 0:
             return
 
+        # Angles for each beam, from the message
+        angles = self.laserscan_config.angle_min + np.arange(deg) * self.laserscan_config.angle_increment  # [rad]
         angle_per_slot = 2.0 * math.pi / deg
         angles = (np.arange(deg)) * angle_per_slot  # map to [-pi, pi]
 
@@ -215,18 +228,18 @@ class Planner(Node):
         obs_unique = np.unique(obs, axis=0)
         self.obst = obs_unique
 
+    def goalDefined(self):
+        if not self._goal_req_sent:
+            self.req_goal_pub.publish(Empty())
+            self._goal_req_sent = True
+        return self.goalX is not None and self.goalY is not None
+
     def atGoal(self):
         if not self.odom_assigned:
             return False
-        elif self.goalX is None or self.goalY is None:
-            if not self._goal_req_sent:
-                self.req_goal_pub.publish(Empty())
-                self._goal_req_sent = True
+        elif self.goalX is None or self.goalY is None:         
             return False
         elif np.linalg.norm(self.X[:2] - np.array([self.goalX, self.goalY])) <= self.config.robot_radius:
-            if not self._goal_req_sent:
-                self.req_goal_pub.publish(Empty())
-                self._goal_req_sent = True
             return True
         return False
 
@@ -327,7 +340,7 @@ class Planner(Node):
         
         ob_costs = self.config.obs_cost_gain * self.calc_obstacle_cost(trajs)
 
-        print("Obstacle costs:", ob_costs)
+        # print("Obstacle costs:", ob_costs)
         final_cost = to_goal_costs + ob_costs + speed_costs
         # final_cost = to_goal_costs + speed_costs
 
@@ -345,7 +358,11 @@ class Planner(Node):
 
     def main_loop(self):
         if self.odom_assigned:
-            if not self.atGoal():
+
+            if not self.goalDefined():
+                self.get_logger().info("Goal not defined!")
+            
+            elif not self.atGoal() and self.goalX is not None and self.goalY is not None:
 
                 self.U = self.dwa_control()
                 self.X[0] = self.x
