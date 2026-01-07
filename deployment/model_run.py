@@ -276,19 +276,14 @@ class ModelNode(Node):
             self._cv.notify()
     
     def _ready_to_infer_locked(self) -> bool:
-        # Minimum safe readiness: current+goal images must exist (if goal img needed).
-        if not (self._have_cur_img and self.goal_img_needed and self._have_goal_img):
-            return False
 
-        # If your model needs pose (OmniVLA), include these:
-        # (leave them in; they won’t hurt for ViNT/GNM/NoMaD)
-        if not (self._have_cur_pose and self._have_goal_pose):
-            return False
-
-        # If you rely on context frames for ViNT/GNM/NoMaD, require context:
-        if self.config.get("num_context_frames", 0) > 0 and not self._have_context:
-            return False
-
+        if self.model_name in {"vint", "gnm", "nomad"}:
+            # current+goal images must exist.
+            if not (self._have_cur_img and self._have_goal_img and self.config.get("num_context_frames", 0) > 0 and not self._have_context):
+                return False
+        elif self.model_name == "omnivla":
+            if not (self._have_cur_img and (self._have_goal_img or self._have_goal_pose)):
+                return False
         return True
     # ---------------- callbacks ----------------
     def on_goal_image(self, msg: CompressedImage):
