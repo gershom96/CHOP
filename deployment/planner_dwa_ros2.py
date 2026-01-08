@@ -230,11 +230,12 @@ class Planner(Node):
         self.obst = obs_unique
 
     def goalDefined(self):
-        if self.goalX is not None and self.goalY is not None:
-            if not self._goal_req_sent:
-                self.req_goal_pub.publish(Empty())
-                self._goal_req_sent = True        
+        if self.goalX is not None and self.goalY is not None:   
             return True
+
+        if not self._goal_req_sent:
+            self.req_goal_pub.publish(Empty())
+            self._goal_req_sent = True     
         return False
     
     def atGoal(self):
@@ -384,6 +385,8 @@ class Planner(Node):
                 self.get_logger().info("Goal reached!")
                 self.speed.linear.x = 0.0
                 self.speed.angular.z = 0.0
+                self.goalX = None
+                self.goalY = None
                 self.X = np.array([self.x, self.y, self.yaw, 0.0, 0.0])
             self.ctrl_pub.publish(self.speed)
 
