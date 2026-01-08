@@ -9,6 +9,7 @@
 # Collision Avoidance (1997).
 
 
+import time
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
@@ -75,7 +76,7 @@ class Planner(Node):
         
         self.sub_odom = self.create_subscription(Odometry, '/odom', self.on_odom, self.qos_profile)
         self.sub_goal = self.create_subscription(PoseStamped, '/next_goal', self.on_goal_cartesian_rf, self.qos_profile)
-        self.sub_laser = self.create_subscription(LaserScan, '/scan', self.on_laserscan , self.qos_profile)
+        # self.sub_laser = self.create_subscription(LaserScan, '/scan', self.on_laserscan , self.qos_profile)
 
         choice = input("Publish? 1 or 0: ")
         
@@ -101,8 +102,8 @@ class Planner(Node):
 
         self.odom_assigned = False
 
-        self.goalX = 2
-        self.goalY = 1
+        self.goalX = None
+        self.goalY = None
         self._goal_req_sent = False
 
     # ------------ ROS callbacks ---------------
@@ -113,8 +114,8 @@ class Planner(Node):
             msg.linear.x: x
             msg.linear.y: y
         """
-        gX = msg.pose.pose.position.x
-        gY = msg.pose.pose.position.y
+        gX = msg.pose.position.x
+        gY = msg.pose.position.y
 
         if self.odom_assigned:
             self.goalX =  self.x + gX*np.cos(self.yaw) - gY*np.sin(self.yaw)
@@ -127,8 +128,8 @@ class Planner(Node):
             msg.linear.x: x     (m)
             msg.linear.y: y     (m)
         """
-        self.goalX = msg.pose.pose.position.x
-        self.goalY = msg.pose.pose.position.y
+        self.goalX = msg.pose.position.x
+        self.goalY = msg.pose.position.y
         self._goal_req_sent = False
 
     def on_goal_spherical_rf(self, msg):
@@ -137,8 +138,8 @@ class Planner(Node):
             msg.linear.x: radius    (m)
             msg.linear.y: theta     (deg)
         """
-        radius = msg.pose.pose.position.x # this will be r
-        theta = np.deg2rad(msg.pose.pose.position.y) # this will be theta
+        radius = msg.pose.position.x # this will be r
+        theta = np.deg2rad(msg.pose.position.y) # this will be theta
 
         # Goal wrt robot frame
         goalX_rob = radius * np.cos(theta)
@@ -155,8 +156,8 @@ class Planner(Node):
             msg.linear.x: radius    (m)
             msg.linear.y: theta     (deg)
         """
-        radius = msg.pose.pose.position.x # this will be r
-        theta = np.deg2rad(msg.pose.pose.position.y) # this will be theta
+        radius = msg.pose.position.x # this will be r
+        theta = np.deg2rad(msg.pose.position.y) # this will be theta
 
         # Goal wrt robot frame
         self.goalX = radius * np.cos(theta)
@@ -229,17 +230,22 @@ class Planner(Node):
         self.obst = obs_unique
 
     def goalDefined(self):
-        if not self._goal_req_sent:
-            self.req_goal_pub.publish(Empty())
-            self._goal_req_sent = True
-        return self.goalX is not None and self.goalY is not None
-
+        if self.goalX is not None and self.goalY is not None:
+            if not self._goal_req_sent:
+                self.req_goal_pub.publish(Empty())
+                self._goal_req_sent = True        
+            return True
+        return False
+    
     def atGoal(self):
         if not self.odom_assigned:
             return False
         elif self.goalX is None or self.goalY is None:         
             return False
         elif np.linalg.norm(self.X[:2] - np.array([self.goalX, self.goalY])) <= self.config.robot_radius:
+            if not self._goal_req_sent:
+                self.req_goal_pub.publish(Empty())
+                self._goal_req_sent = True
             return True
         return False
 
@@ -341,8 +347,8 @@ class Planner(Node):
         ob_costs = self.config.obs_cost_gain * self.calc_obstacle_cost(trajs)
 
         # print("Obstacle costs:", ob_costs)
-        final_cost = to_goal_costs + ob_costs + speed_costs
-        # final_cost = to_goal_costs + speed_costs
+        # final_cost = to_goal_costs + ob_costs + speed_costs
+        final_cost = to_goal_costs + speed_costs
 
         if final_cost.size == 0:
             return np.array([0.0, 0.0])
@@ -363,7 +369,7 @@ class Planner(Node):
                 self.get_logger().info("Goal not defined!")
             
             elif not self.atGoal() and self.goalX is not None and self.goalY is not None:
-
+                t1 = time.time()
                 self.U = self.dwa_control()
                 self.X[0] = self.x
                 self.X[1] = self.y
@@ -372,6 +378,8 @@ class Planner(Node):
                 self.X[4] = self.U[1]
                 self.speed.linear.x = self.X[3]
                 self.speed.angular.z = self.X[4]
+                t2 = time.time()
+                self.get_logger().info(f"Executing DWA control. Time taken: {t2 - t1:.4f} seconds")
             else:
                 self.get_logger().info("Goal reached!")
                 self.speed.linear.x = 0.0
