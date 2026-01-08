@@ -19,7 +19,7 @@ import numpy as np
 
 # Message types
 from std_msgs.msg import Empty
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 from scipy.spatial.transform import Rotation as R
@@ -74,10 +74,10 @@ class Planner(Node):
         self.norm_factor = 1 / self.obs_resolution
         
         self.sub_odom = self.create_subscription(Odometry, '/odom', self.on_odom, self.qos_profile)
-        self.sub_goal = self.create_subscription(Twist, '/next_goal', self.on_goal_cartesian_rf, self.qos_profile)
+        self.sub_goal = self.create_subscription(PoseStamped, '/next_goal', self.on_goal_cartesian_rf, self.qos_profile)
         self.sub_laser = self.create_subscription(LaserScan, '/scan', self.on_laserscan , self.qos_profile)
 
-        choice = input("Publish? 1 or 0")
+        choice = input("Publish? 1 or 0: ")
         
         if(int(choice) == 1):
             self.ctrl_pub = self.create_publisher(Twist, '/cmd_vel', 10)
@@ -113,8 +113,8 @@ class Planner(Node):
             msg.linear.x: x
             msg.linear.y: y
         """
-        gX = msg.linear.x
-        gY = msg.linear.y
+        gX = msg.pose.pose.position.x
+        gY = msg.pose.pose.position.y
 
         if self.odom_assigned:
             self.goalX =  self.x + gX*np.cos(self.yaw) - gY*np.sin(self.yaw)
@@ -127,8 +127,8 @@ class Planner(Node):
             msg.linear.x: x     (m)
             msg.linear.y: y     (m)
         """
-        self.goalX = msg.linear.x
-        self.goalY = msg.linear.y
+        self.goalX = msg.pose.pose.position.x
+        self.goalY = msg.pose.pose.position.y
         self._goal_req_sent = False
 
     def on_goal_spherical_rf(self, msg):
@@ -137,8 +137,8 @@ class Planner(Node):
             msg.linear.x: radius    (m)
             msg.linear.y: theta     (deg)
         """
-        radius = msg.linear.x # this will be r
-        theta = np.deg2rad(msg.linear.y) # this will be theta
+        radius = msg.pose.pose.position.x # this will be r
+        theta = np.deg2rad(msg.pose.pose.position.y) # this will be theta
 
         # Goal wrt robot frame
         goalX_rob = radius * np.cos(theta)
@@ -155,8 +155,8 @@ class Planner(Node):
             msg.linear.x: radius    (m)
             msg.linear.y: theta     (deg)
         """
-        radius = msg.linear.x # this will be r
-        theta = np.deg2rad(msg.linear.y) # this will be theta
+        radius = msg.pose.pose.position.x # this will be r
+        theta = np.deg2rad(msg.pose.pose.position.y) # this will be theta
 
         # Goal wrt robot frame
         self.goalX = radius * np.cos(theta)
