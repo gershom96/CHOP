@@ -60,10 +60,14 @@ def overlay_path(pts_cur: np.ndarray, img: Optional[np.ndarray] = None, cam_matr
         return
     
     dense_pts = densify_path(pts_cur, num_points=1000)
-    left_b, right_b, poly_b = make_corridor_polygon(dense_pts, width_m=0.5)
-    # Points in base frame -> camera frame -> pixels
+    if dense_pts is None or dense_pts.size == 0:
+        return
 
-    traj_c = transform_points(T_cam_from_base, dense_pts)
+    # Lift 2D (x,y) into 3D (z=0) before transforms
+    dense_pts3 = np.hstack([dense_pts, np.zeros((dense_pts.shape[0], 1))])
+    left_b, right_b, poly_b = make_corridor_polygon(dense_pts3, width_m=0.5)
+
+    traj_c = transform_points(T_cam_from_base, dense_pts3)
     left_c = transform_points(T_cam_from_base, left_b)
     right_c= transform_points(T_cam_from_base, right_b)
     poly_c = transform_points(T_cam_from_base, poly_b)
@@ -80,10 +84,12 @@ def overlay_path(pts_cur: np.ndarray, img: Optional[np.ndarray] = None, cam_matr
     return img
 
 def densify_path(pts_cur: np.ndarray, num_points: int = 1000) -> np.ndarray:
-
+    if pts_cur.shape[0] < 2:
+        return np.empty((0, 2), dtype=np.float64)
     x, y = pts_cur[:,0], pts_cur[:,1]
     t = np.r_[0, np.cumsum(np.linalg.norm(np.diff(pts_cur, axis=0), axis=1))]
-    if t[-1] == 0: return  # all points identical
+    if t[-1] == 0:
+        return np.empty((0, 2), dtype=np.float64)  # all points identical
     t /= t[-1]
     
     sx, sy = CubicSpline(t, x), CubicSpline(t, y)
