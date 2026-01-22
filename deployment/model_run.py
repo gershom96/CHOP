@@ -13,7 +13,7 @@ from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 from std_msgs.msg import Empty
 from nav_msgs.msg import Path
 from geometry_msgs.msg import PoseStamped
-from sensor_msgs.msg import CompressedImage
+from sensor_msgs.msg import CompressedImage, Image
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Twist
 
@@ -120,7 +120,7 @@ class ModelNode(Node):
         self.get_logger().info(f"worker alive={self._worker.is_alive()}")
         
 
-        self.create_subscription(CompressedImage, "/camera/image/compressed", self.on_image, 10)
+        self.create_subscription(CompressedImage, "/camera/camera/image/compressed", self.on_image, 10)
 
         self.get_logger().info(
             f"step_m={self.waypoint_spacing}, frame_id={self.path_frame_id}, config_path={self.config_path}"

@@ -36,7 +36,7 @@ class PathManagerNode(Node):
         self.declare_parameter("behind_margin", 0.09)    # pop if x < -margin
         self.declare_parameter("reach_radius", 0.1)     # pop if dist < radius (extra robustness)
         self.declare_parameter("overlay_enabled", visualize)
-        self.declare_parameter("image_topic", "/camera/camera/image/compressed")
+        self.declare_parameter("image_topic", "/camera/camera/color/image_raw/compressed")
         self.declare_parameter("overlay_topic", "/path_overlay")
 
         self.base_frame = self.get_parameter("base_frame").value
@@ -72,7 +72,7 @@ class PathManagerNode(Node):
         if self.overlay_enabled:
             self.bridge = CvBridge()
             self.create_subscription(CompressedImage, self.image_topic, self.on_image, 10)
-            self.pub_overlay = self.create_publisher(CompressedImage, self.overlay_topic, 10)
+            self.pub_overlay = self.create_publisher(Image, self.overlay_topic, 10)
 
         self.pub_next_goal = self.create_publisher(PoseStamped, "/next_goal", 10)
         self.pub_active_path = self.create_publisher(Path, "/active_path", 10)
@@ -131,7 +131,7 @@ class PathManagerNode(Node):
             return
         img = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="bgr8")
         with self._lock:
-            self._image = img
+            self._image = img.copy()
             if self._pts_w is not None and self._current_T_w is not None:
                 _pts_w = self._pts_w.copy()
                 T_c = self._current_T_w.copy()
@@ -143,7 +143,12 @@ class PathManagerNode(Node):
             pts_cur = (np.linalg.inv(T_c) @ pts_w_h)[:2, :].T  # (N,2)
             overlay_img = overlay_path(pts_cur, img, self.cam_matrix, self.T_cam_from_base)
             if overlay_img is not None:
-                out_msg = self.bridge.cv2_to_compressed_imgmsg(overlay_img, dst_format="jpeg")
+                out_msg = self.bridge.cv2_to_imgmsg(overlay_img, encoding="bgr8")
+                out_msg.header.stamp = msg.header.stamp
+                out_msg.header.frame_id = self.world_frame
+                self.pub_overlay.publish(out_msg)
+            else:
+                out_msg = self.bridge.cv2_to_imgmsg(img, encoding="bgr8")
                 out_msg.header.stamp = msg.header.stamp
                 out_msg.header.frame_id = self.world_frame
                 self.pub_overlay.publish(out_msg)
@@ -185,7 +190,7 @@ class PathManagerNode(Node):
         if self.overlay_enabled and pts_w.size != 0 and self._image is not None:
             overlay_img = overlay_path(pts_cur, self._image, self.cam_matrix, self.T_cam_from_base)
             if overlay_img is not None:
-                out_msg = self.bridge.cv2_to_compressed_imgmsg(overlay_img, dst_format="jpeg")
+                out_msg = self.bridge.cv2_to_imgmsg(overlay_img, encoding="bgr8")
                 out_msg.header.stamp = self.get_clock().now().to_msg()
                 out_msg.header.frame_id = self.world_frame
                 self.pub_overlay.publish(out_msg)
