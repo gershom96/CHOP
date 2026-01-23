@@ -2,7 +2,7 @@
 import argparse
 from dataclasses import dataclass
 import threading
-from typing import Optional, List
+from typing import Optional
 import os, sys, importlib
 import yaml 
 
@@ -28,9 +28,6 @@ from policy_sources.visualnav_transformer.deployment.src.utils import load_model
 from policy_sources.omnivla.inference.run_omnivla_modified import Inference
 from policy_sources.visualnav_transformer.deployment.src.utils import transform_images
 from policy_sources.visualnav_transformer.train.vint_train.training.train_utils import get_action
-
-# Default topomap location (relative to this file)
-TOPOMAP_IMAGES_ROOT = os.path.join(os.path.dirname(__file__), "topomaps", "images")
 
 class InferenceConfigOriginal:
     resume: bool = True
@@ -71,17 +68,7 @@ class ContextFrame:
     image: np.ndarray
 
 class ModelNode(Node):
-    def __init__(
-        self,
-        config_path: Optional[str] = None,
-        model_name: Optional[str] = None,
-        finetuned: bool = False,
-        topomap_name: str = "topomap",
-        goal_node: int = -1,
-        radius: int = 4,
-        close_threshold: int = 3,
-        waypoint_index: int = 2,
-    ):
+    def __init__(self, config_path: Optional[str] = None, model_name: Optional[str] = None, finetuned: bool = False):
         super().__init__("model_node")
 
         self.qos_profile  = QoSProfile(
@@ -98,11 +85,6 @@ class ModelNode(Node):
         self.config_path = config_path
         self.model_name = model_name
         self.finetuned = finetuned
-        self.topomap_name = topomap_name
-        self.goal_node_arg = goal_node
-        self.radius = radius
-        self.close_threshold = close_threshold
-        self.waypoint_index = waypoint_index
 
         # ---------- State ----------
         self._lock = threading.Lock()
@@ -114,9 +96,6 @@ class ModelNode(Node):
         self._have_cur_pose = False
         self._have_goal_pose = False
         self._have_context = False
-        self.topomap: Optional[List[PILImage.Image]] = None
-        self.closest_node: int = 0
-        self.goal_node_idx: Optional[int] = None
 
         self.config = self._load_config()
         self.context_update_period = self.config.get("context_update_period", 0.3)
@@ -150,9 +129,6 @@ class ModelNode(Node):
         self.vla_config = InferenceConfigOriginal()
         self.vla_config_finetuned = InferenceConfigFinetuned()
         self.model, self.noise_scheduler = self._load_model(finetuned=True, )
-
-        if self.model_name in {"vint", "gnm", "nomad"}:
-            self._load_topomap()
 
         self.cur_frame = FrameItem(
             image=None,
@@ -247,29 +223,6 @@ class ModelNode(Node):
             model.requires_grad_(False)
         return model, noise_scheduler
 
-    def _load_topomap(self):
-        """Load ordered topomap images from the given directory."""
-        topomap_dir = os.path.join(TOPOMAP_IMAGES_ROOT, self.topomap_name)
-        if not os.path.isdir(topomap_dir):
-            raise FileNotFoundError(f"Topomap directory not found: {topomap_dir}")
-        filenames = sorted(
-            [f for f in os.listdir(topomap_dir) if f.lower().endswith((".png", ".jpg", ".jpeg"))],
-            key=lambda x: int(os.path.splitext(x)[0]),
-        )
-        if not filenames:
-            raise RuntimeError(f"No images found in topomap directory: {topomap_dir}")
-        self.topomap = [PILImage.open(os.path.join(topomap_dir, f)) for f in filenames]
-        if self.goal_node_arg == -1:
-            self.goal_node_idx = len(self.topomap) - 1
-        else:
-            if not (0 <= self.goal_node_arg < len(self.topomap)):
-                raise ValueError(f"goal_node {self.goal_node_arg} out of range for topomap of size {len(self.topomap)}")
-            self.goal_node_idx = self.goal_node_arg
-        self.closest_node = 0
-        self.get_logger().info(
-            f"Loaded topomap '{self.topomap_name}' with {len(self.topomap)} nodes. Goal node: {self.goal_node_idx}"
-        )
-
     def _inference_worker(self):
         while True:
             # print(f"Waiting for inference conditions: shutdown={self._shutdown}, dirty={self._dirty}, ready={self._ready_to_infer_locked()}, running={self._inference_running}")
@@ -338,8 +291,8 @@ class ModelNode(Node):
     def _ready_to_infer_locked(self) -> bool:
 
         if self.model_name in {"vint", "gnm", "nomad"}:
-            # only need current image and context for topomap-based visual nav
-            if not (self._have_cur_img and self._have_context):
+            # current+goal images must exist.
+            if not (self._have_cur_img and self._have_goal_img and self._have_context):
                 return False
         elif self.model_name == "omnivla":
             if not (self._have_cur_img and (self._have_goal_img or self._have_goal_pose) and self._have_cur_pose):
@@ -408,82 +361,48 @@ class ModelNode(Node):
         if self.model_name in {"vint", "gnm", "nomad"}:
             context_imgs = [f.image[:, :, ::-1] for f in context_frames]  # BGR -> RGB
             context_pil = [PILImage.fromarray(img) for img in context_imgs]
+            goal_pil = PILImage.fromarray(goal_frame.image[:, :, ::-1])
 
-            start = max(self.closest_node - self.radius, 0)
-            end = min(self.closest_node + self.radius + 1, self.goal_node_idx)
-            
-            if self.model_name in {"vint", "gnm"}:                # ViNT/GNM
-                batch_obs_imgs = []
-                batch_goal_data = []
-                for sg_img in self.topomap[start : end + 1]:
-                    transf_obs_img = transform_images(context_pil, self.config["image_size"])
-                    goal_data = transform_images(sg_img, self.config["image_size"])
-                    batch_obs_imgs.append(transf_obs_img)
-                    batch_goal_data.append(goal_data)
-                batch_obs_imgs = torch.cat(batch_obs_imgs, dim=0).to(device)
-                batch_goal_data = torch.cat(batch_goal_data, dim=0).to(device)
+        if self.model_name in {"vint", "gnm"}:
+            obs_tensor = transform_images(context_pil, self.config["image_size"])
+            goal_tensor = transform_images(goal_pil, self.config["image_size"])
+            obs_tensor = obs_tensor.to(device)
+            goal_tensor = goal_tensor.to(device)
+            with torch.no_grad():
+                _, action_pred = model(obs_tensor, goal_tensor)
+            path_xy = action_pred[0, :, :2].detach().cpu().numpy()
+        elif self.model_name == "nomad":
+            if noise_scheduler is None:
+                raise RuntimeError("Noise scheduler required for NoMaD inference.")
+            obs_images = transform_images(context_pil, self.config["image_size"], center_crop=False)
+            obs_images = torch.split(obs_images, 3, dim=1)
+            obs_images = torch.cat(obs_images, dim=1).to(device)
+            goal_tensor = transform_images(goal_pil, self.config["image_size"], center_crop=False).to(device)
+            mask = torch.zeros(1, device=device).long()
 
-                distances, paths = model(batch_obs_imgs, batch_goal_data)
-                distances = distances.detach().cpu().numpy()
-                paths = paths.detach().cpu().numpy()
-                min_dist_idx = int(np.argmin(distances))
-                if distances[min_dist_idx] > self.close_threshold:
-                    chosen_waypoint = paths[min_dist_idx][self.waypoint_index]
-                    self.closest_node = start + min_dist_idx
-                else:
-                    chosen_waypoint = paths[min(min_dist_idx + 1, len(paths) - 1)][self.waypoint_index]
-                    self.closest_node = min(start + min_dist_idx + 1, self.goal_node_idx)
-                # convert to path_xy with a single waypoint
-                path_xy = np.array(chosen_waypoint[:2]).reshape(1, 2)
-            
-            elif self.model_name == "nomad":
-                if noise_scheduler is None:
-                    raise RuntimeError("Noise scheduler required for NoMaD inference.")
-                obs_images = transform_images(context_pil, self.config["image_size"], center_crop=False)
-                obs_images = torch.split(obs_images, 3, dim=1)
-                obs_images = torch.cat(obs_images, dim=1).to(device)
-                mask = torch.zeros(1, device=device).long()
+            obsgoal_cond = model('vision_encoder', obs_img=obs_images, goal_img=goal_tensor, input_goal_mask=mask)
+            obs_cond = obsgoal_cond
 
-                goal_image = [
-                    transform_images(g_img, self.config["image_size"], center_crop=False).to(device)
-                    for g_img in self.topomap[start : end + 1]
-                ]
-                goal_image = torch.concat(goal_image, dim=0)
-
-                obsgoal_cond = model(
-                    'vision_encoder',
-                    obs_img=obs_images.repeat(len(goal_image), 1, 1, 1),
-                    goal_img=goal_image,
-                    input_goal_mask=mask.repeat(len(goal_image)),
-                )
-                dists = model("dist_pred_net", obsgoal_cond=obsgoal_cond)
-                dists = dists.detach().cpu().numpy().flatten()
-                min_idx = int(np.argmin(dists))
-                self.closest_node = min_idx + start
-                sg_idx = min(min_idx + int(dists[min_idx] < self.close_threshold), len(obsgoal_cond) - 1)
-                obs_cond = obsgoal_cond[sg_idx].unsqueeze(0)
-
-                # sample actions via diffusion
-                num_diffusion_iters = self.config["num_diffusion_iters"]
-                noise_scheduler.set_timesteps(num_diffusion_iters)
-                with torch.no_grad():
-                    noisy_action = torch.randn((1, self.config["len_traj_pred"], 2), device=device)
-                    naction = noisy_action
-                    for k in noise_scheduler.timesteps:
-                        noise_pred = model(
-                            'noise_pred_net',
-                            sample=naction,
-                            timestep=k,
-                            global_cond=obs_cond
-                        )
-                        naction = noise_scheduler.step(
-                            model_output=noise_pred,
-                            timestep=k,
-                            sample=naction
-                        ).prev_sample
-                naction = get_action(naction)
-                path_xy = naction[0, :, :2].detach().cpu().numpy()
-                path_xy = path_xy * self.waypoint_spacing  # meters
+            num_diffusion_iters = self.config["num_diffusion_iters"]
+            noise_scheduler.set_timesteps(num_diffusion_iters)
+            with torch.no_grad():
+                noisy_action = torch.randn((1, self.config["len_traj_pred"], 2), device=device)
+                naction = noisy_action
+                for k in noise_scheduler.timesteps:
+                    noise_pred = model(
+                        'noise_pred_net',
+                        sample=naction,
+                        timestep=k,
+                        global_cond=obs_cond
+                    )
+                    naction = noise_scheduler.step(
+                        model_output=noise_pred,
+                        timestep=k,
+                        sample=naction
+                    ).prev_sample
+            naction = get_action(naction)
+            path_xy = naction[0, :, :2].detach().cpu().numpy()
+            path_xy = path_xy * self.waypoint_spacing # Scale to meter To.do: make this configurable
         elif self.model_name == "omnivla":
             cur_img = PILImage.fromarray(cur_frame.image[:, :, ::-1]) #BGR to RGB
             cur_pos = cur_frame.pos
@@ -529,24 +448,10 @@ def main():
     parser.add_argument("-c", "--config", type=str, help="Path to config file", default="./configs/chop_inference_run.yaml")
     parser.add_argument("-m", "--model", type=str, help="Model name", default="omnivla")
     parser.add_argument("--finetuned", action="store_true", help="Use finetuned weights")
-    parser.add_argument("--topomap", type=str, default="topomap", help="Topomap directory name under topomaps/images")
-    parser.add_argument("--goal-node", type=int, default=-1, help="Goal node index (-1 uses last node)")
-    parser.add_argument("--radius", type=int, default=4, help="Temporal radius of nodes to consider for localization")
-    parser.add_argument("--close-threshold", type=int, default=3, help="Distance threshold to advance to next node")
-    parser.add_argument("--waypoint-index", type=int, default=2, help="Index of waypoint to use from model outputs")
     args, ros_args = parser.parse_known_args()
 
     rclpy.init(args=ros_args)
-    node = ModelNode(
-        config_path=args.config,
-        model_name=args.model,
-        finetuned=args.finetuned,
-        topomap_name=args.topomap,
-        goal_node=args.goal_node,
-        radius=args.radius,
-        close_threshold=args.close_threshold,
-        waypoint_index=args.waypoint_index,
-    )
+    node = ModelNode(config_path=args.config, model_name=args.model, finetuned=args.finetuned)
     try:
         rclpy.spin(node)
     finally:
