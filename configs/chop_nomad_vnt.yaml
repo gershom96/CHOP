@@ -10,7 +10,7 @@ gpu_ids: [0, 1, 2, 3]
 num_workers: 8
 lr: 5e-5
 optimizer: adamw
-clipping: False
+clipping: True
 max_norm: 1.
 scheduler: "cosine"
 warmup: True 
@@ -49,10 +49,10 @@ alpha: 1e-4
 # distance bounds for distance and action and distance predictions 
 distance:
   min_dist_cat: 0
-  max_dist_cat: 20
+  max_dist_cat: 10
 action:
   min_dist_cat: 3
-  max_dist_cat: 20
+  max_dist_cat: 10
 
 # action output params
 len_traj_pred: 8
