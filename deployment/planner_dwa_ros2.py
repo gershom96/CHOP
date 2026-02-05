@@ -9,6 +9,7 @@
 # Collision Avoidance (1997).
 
 
+import argparse
 import time
 import rclpy
 from rclpy.node import Node
@@ -30,7 +31,7 @@ from typing import List, Optional, Tuple
 class LaserScanConfig:
     max_angle: float = 180.0        # degrees
     min_angle: float = -180.0       # degrees
-    angle_increment: float = 0.5    # degrees
+    angle_increment: float = 0.25    # degrees
     range_min: float = 0.25         # meters
     range_max: float = 4.0          # meters
     scan_skip: int = 1              # idxs
@@ -38,16 +39,16 @@ class LaserScanConfig:
 
 class RobotConfig():
 
-    max_speed = 0.1        # [m/s]
+    max_speed = 0.3        # [m/s]
     min_speed = 0.0        # [m/s]
-    max_yawrate = 0.4    # [rad/s]
+    max_yawrate = 0.2    # [rad/s]
     max_accel = 1          # [m/s^2]
     max_dyawrate = 3.2     # [rad/s^2]
 
     v_reso = 0.005          # [m/s]
     yawrate_reso = 0.01    # [rad/s]
 
-    dt = 0.1             # [s]
+    dt = 0.5             # [s]
     predict_time = 1.5     # [s]
 
     to_goal_cost_gain = 1  # lower = detour
@@ -57,7 +58,7 @@ class RobotConfig():
     robot_radius = 0.2
  
 class Planner(Node):
-    def __init__(self):
+    def __init__(self, cmd_topic: str = '/cmd_vel'):
         super().__init__('dwa_costmap')
 
         self.qos_profile = QoSProfile(  
@@ -74,14 +75,14 @@ class Planner(Node):
         self.obs_resolution = 0.05
         self.norm_factor = 1 / self.obs_resolution
         
-        self.sub_odom = self.create_subscription(Odometry, '/odom', self.on_odom, self.qos_profile)
-        self.sub_goal = self.create_subscription(PoseStamped, '/next_goal', self.on_goal_cartesian_rf, self.qos_profile)
+        self.sub_odom = self.create_subscription(Odometry, '/odom_lidar', self.on_odom, self.qos_profile)
+        self.sub_goal = self.create_subscription(PoseStamped, '/next_goal', self.on_goal_cartesian_wf, self.qos_profile)
         # self.sub_laser = self.create_subscription(LaserScan, '/scan', self.on_laserscan , self.qos_profile)
-
+        self.cmd_topic = cmd_topic
         choice = input("Publish? 1 or 0: ")
         
         if(int(choice) == 1):
-            self.ctrl_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+            self.ctrl_pub = self.create_publisher(Twist, self.cmd_topic, 10)
             print("Publishing to cmd_vel")
         else:
             self.ctrl_pub = self.create_publisher(Twist, "/dont_publish", 1)
@@ -396,9 +397,11 @@ class Planner(Node):
             self.main_loop()
     
 if __name__ == '__main__':
-    
+    parser = argparse.ArgumentParser(description="Run the Path Manager")
+    parser.add_argument("--cmd", type=str, default='/cmd_vel', help="Command topic name")
+    args, ros_args = parser.parse_known_args()
     rclpy.init()
-    node = Planner()
+    node = Planner(cmd_topic=args.cmd)
     try:
         node.run()
     except KeyboardInterrupt:

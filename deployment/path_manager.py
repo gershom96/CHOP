@@ -22,21 +22,26 @@ from deployment.utils.transformations import start_to_current
 from deployment.utils.visualization import load_calibration, overlay_path
 
 class PathManagerNode(Node):
-    def __init__(self, camera_config_file: str, visualize: bool):
+    def __init__(self, camera_config_file: str, visualize: bool, odom_topic: str = "/odom_lidar", image_topic: str = "/camera/camera/color/image_raw/compressed"):
         super().__init__("path_manager")
 
         self.qos_profile  = QoSProfile(
-                                reliability=QoSReliabilityPolicy.BEST_EFFORT,
-                                history=QoSHistoryPolicy.KEEP_LAST,  
-                                depth=15  
-                            )
+                        reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                        history=QoSHistoryPolicy.KEEP_LAST,  
+                        depth=15  
+                    )
+        
+        self.qos_profile_r  = QoSProfile(
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                history=QoSHistoryPolicy.KEEP_LAST,  
+                depth=15  
+            )
         # ---- Params ----
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("world_frame", "odom")
         self.declare_parameter("behind_margin", 0.09)    # pop if x < -margin
         self.declare_parameter("reach_radius", 0.1)     # pop if dist < radius (extra robustness)
         self.declare_parameter("overlay_enabled", visualize)
-        self.declare_parameter("image_topic", "/camera/camera/color/image_raw/compressed")
         self.declare_parameter("overlay_topic", "/path_overlay")
 
         self.base_frame = self.get_parameter("base_frame").value
@@ -44,11 +49,13 @@ class PathManagerNode(Node):
         self.behind_margin = float(self.get_parameter("behind_margin").value)
         self.reach_radius = float(self.get_parameter("reach_radius").value)
         self.overlay_enabled = bool(self.get_parameter("overlay_enabled").value)
-        self.image_topic = self.get_parameter("image_topic").value
         self.overlay_topic = self.get_parameter("overlay_topic").value
 
         self.cam_matrix, self.dist_coeffs, self.T_base_from_cam = load_calibration(camera_config_file)
         self.T_cam_from_base = np.linalg.inv(self.T_base_from_cam)
+
+        self.odom_topic = odom_topic
+        self.image_topic = image_topic
 
         # ---- State ----
         self._lock = threading.Lock()
@@ -64,7 +71,7 @@ class PathManagerNode(Node):
         self._image: Optional[np.ndarray] = None
 
         # ---- ROS I/O ----
-        self.create_subscription(Odometry, "/odom", self.on_odom, self.qos_profile)
+        self.create_subscription(Odometry, self.odom_topic, self.on_odom, self.qos_profile)
         self.create_subscription(Empty, "/started", self.on_started, self.qos_profile)
         self.create_subscription(Path, "/path", self.on_path, self.qos_profile)
         self.create_subscription(Empty, "/req_goal", self.on_req_goal, self.qos_profile)
@@ -199,7 +206,7 @@ class PathManagerNode(Node):
 
         if pts_world.size == 0:
             return
-        gx, gy = pts_world[0]
+        gx, gy = pts_world[-1]
 
         goal = PoseStamped()
         goal.header.stamp = self.get_clock().now().to_msg()
@@ -226,10 +233,12 @@ def main():
     parser = argparse.ArgumentParser(description="Run the Path Manager")
     parser.add_argument("-c", "--config", type=str, help="Path to Camera config file", default="./deployment/camera_matrix.json")
     parser.add_argument("--visualize", action="store_true", help="Visualize the results", default=True)
+    parser.add_argument("--odom", type=str, default="/odom_lidar", help="Odom topic name")
+    parser.add_argument("--image", type=str, default="/camera/camera/color/image_raw/compressed", help="Image topic name")
     args, ros_args = parser.parse_known_args()
     
     rclpy.init()
-    node = PathManagerNode(camera_config_file=args.config, visualize=args.visualize)
+    node = PathManagerNode(camera_config_file=args.config, visualize=args.visualize, odom_topic=args.odom, image_topic=args.image)
     try:
         rclpy.spin(node)
     finally:

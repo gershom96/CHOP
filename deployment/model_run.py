@@ -30,7 +30,8 @@ from policy_sources.visualnav_transformer.deployment.src.utils import transform_
 from policy_sources.visualnav_transformer.train.vint_train.training.train_utils import get_action
 
 # Default topomap location (relative to this file)
-TOPOMAP_IMAGES_ROOT = os.path.join(os.path.dirname(__file__), "topomaps", "images")
+# TOPOMAP_IMAGES_ROOT = os.path.join(os.path.dirname(__file__), "topomaps", "images")
+TOPOMAP_IMAGES_ROOT = "/workspace/chop/policy_sources/visualnav_transformer/deployment/topomaps/images"  # updated path
 
 class InferenceConfigOriginal:
     resume: bool = True
@@ -81,6 +82,8 @@ class ModelNode(Node):
         radius: int = 4,
         close_threshold: int = 3,
         waypoint_index: int = 2,
+        odom_topic: str = "/odom",
+        image_topic: str = "/camera/image_raw/compressed",
     ):
         super().__init__("model_node")
 
@@ -89,6 +92,12 @@ class ModelNode(Node):
                         history=QoSHistoryPolicy.KEEP_LAST,  
                         depth=15  
                     )
+        
+        self.qos_profile_r  = QoSProfile(
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                history=QoSHistoryPolicy.KEEP_LAST,  
+                depth=15  
+            )
         # ---------- Params ----------
         self.declare_parameter("path_frame_id", "base_link")  # semantic frame name
         self.declare_parameter("waypoint_spacing", 0.38)                 # spacing
@@ -103,6 +112,9 @@ class ModelNode(Node):
         self.radius = radius
         self.close_threshold = close_threshold
         self.waypoint_index = waypoint_index
+
+        self.odom_topic = odom_topic
+        self.image_topic = image_topic
 
         # ---------- State ----------
         self._lock = threading.Lock()
@@ -131,7 +143,7 @@ class ModelNode(Node):
         self.pub_path = self.create_publisher(Path, "/path", 10)
 
         self.bridge = CvBridge()
-        self.sub_odom = self.create_subscription(Odometry, "/odom", self.on_odom, 10)
+        self.sub_odom = self.create_subscription(Odometry, self.odom_topic, self.on_odom, qos_profile=self.qos_profile)
         self.sub_goal_img = self.create_subscription(CompressedImage, "/goal/image/compressed", self.on_goal_image, 10)
         self.sub_goal_pose = self.create_subscription(PoseStamped, "/goal/pose", self.on_goal_pose, 10)
         self.sub_nav = self.create_subscription(Empty, "/nav_cmd", self.on_nav_cmd, 10)
@@ -141,7 +153,7 @@ class ModelNode(Node):
         self.get_logger().info(f"worker alive={self._worker.is_alive()}")
         
 
-        self.create_subscription(CompressedImage, "/camera/camera/image/compressed", self.on_image, 10)
+        self.create_subscription(CompressedImage, self.image_topic, self.on_image, 10)
 
         self.get_logger().info(
             f"step_m={self.waypoint_spacing}, frame_id={self.path_frame_id}, config_path={self.config_path}"
@@ -149,7 +161,7 @@ class ModelNode(Node):
 
         self.vla_config = InferenceConfigOriginal()
         self.vla_config_finetuned = InferenceConfigFinetuned()
-        self.model, self.noise_scheduler = self._load_model(finetuned=True, )
+        self.model, self.noise_scheduler = self._load_model(finetuned=self.finetuned)
 
         if self.model_name in {"vint", "gnm", "nomad"}:
             self._load_topomap()
@@ -428,13 +440,13 @@ class ModelNode(Node):
                 paths = paths.detach().cpu().numpy()
                 min_dist_idx = int(np.argmin(distances))
                 if distances[min_dist_idx] > self.close_threshold:
-                    chosen_waypoint = paths[min_dist_idx][self.waypoint_index]
+                    chosen_path = paths[min_dist_idx]
                     self.closest_node = start + min_dist_idx
                 else:
-                    chosen_waypoint = paths[min(min_dist_idx + 1, len(paths) - 1)][self.waypoint_index]
+                    chosen_path = paths[min(min_dist_idx + 1, len(paths) - 1)]
                     self.closest_node = min(start + min_dist_idx + 1, self.goal_node_idx)
-                # convert to path_xy with a single waypoint
-                path_xy = np.array(chosen_waypoint[:2]).reshape(1, 2)
+                # convert to path_xy
+                path_xy = np.array(chosen_path[:, :2]).reshape(chosen_path.shape[0], 2)
             
             elif self.model_name == "nomad":
                 if noise_scheduler is None:
@@ -534,6 +546,9 @@ def main():
     parser.add_argument("--radius", type=int, default=4, help="Temporal radius of nodes to consider for localization")
     parser.add_argument("--close-threshold", type=int, default=3, help="Distance threshold to advance to next node")
     parser.add_argument("--waypoint-index", type=int, default=2, help="Index of waypoint to use from model outputs")
+    parser.add_argument("--odom", type=str, default="/odom_lidar", help="Odom topic name")
+    parser.add_argument("--image", type=str, default="/camera/camera/color/image_raw/compressed", help="Image topic name")
+
     args, ros_args = parser.parse_known_args()
 
     rclpy.init(args=ros_args)
@@ -546,6 +561,8 @@ def main():
         radius=args.radius,
         close_threshold=args.close_threshold,
         waypoint_index=args.waypoint_index,
+        odom_topic=args.odom,
+        image_topic=args.image,
     )
     try:
         rclpy.spin(node)

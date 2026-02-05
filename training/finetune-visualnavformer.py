@@ -154,7 +154,7 @@ def main(config):
         )
     elif config["model_type"] == "vint":
         model = ViNT(
-            context_size=config["context_size"],
+            context_size=config["contexe6t_size"],
             len_traj_pred=config["len_traj_pred"],
             learn_angle=config["learn_angle"],
             obs_encoder=config["obs_encoder"],

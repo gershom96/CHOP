@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import math
 import threading
+import argparse
 
 import numpy as np
 import rclpy
@@ -17,7 +18,7 @@ def clip_angle(angle: float) -> float:
 
 
 class PlannerOmniVLANode(Node):
-    def __init__(self):
+    def __init__(self, cmd_vel: str = '/cmd_vel'):
         super().__init__("planner_omnivla")
 
         self.qos_profile = QoSProfile(
@@ -50,13 +51,14 @@ class PlannerOmniVLANode(Node):
         self._pose = None  # (x, y, yaw) in odom/world
         self._goal = None  # (x, y) in odom/world
         self._goal_done = False
+        self.cmd_vel = cmd_vel
 
         # ROS I/O
 
         choice = input("Publish? 1 or 0: ")
         
         if(int(choice) == 1):
-            self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', 10)
+            self.pub_cmd = self.create_publisher(Twist, self.cmd_vel, 10)
             print("Publishing to cmd_vel")
         else:
             self.pub_cmd = self.create_publisher(Twist, "/dont_publish", 1)
@@ -66,8 +68,8 @@ class PlannerOmniVLANode(Node):
         self.pub_req_goal = self.create_publisher(Empty, "/req_goal", 10)
         self.create_subscription(Odometry, "/odom", self.on_odom, self.qos_profile)
         self.create_subscription(PoseStamped, "/next_goal", self.on_goal, self.qos_profile)
-
-        self.create_timer(self.control_dt, self._control_step)
+# 
+        # self.create_timer(self.control_dt, self._control_step)
 
         self.get_logger().info(
             f"planner_omnivla ready (dt={self.dt}, lin_clip={self.lin_clip}, ang_clip={self.ang_clip}, "
@@ -122,10 +124,10 @@ class PlannerOmniVLANode(Node):
             linear_vel_value, angular_vel_value = self._compute_cmd(dx, dy, heading_err)
             cmd.linear.x = linear_vel_value
             cmd.angular.z = angular_vel_value
-
+        print(cmd)
         self.pub_cmd.publish(cmd)
 
-    def _compute_cmd(self, dx: float, dy: float, heading_err: float):
+    def _comp_compute_cmdute_cmd(self, dx: float, dy: float, heading_err: float):
         EPS = 1e-8
         dt = self.dt
 
@@ -165,16 +167,22 @@ class PlannerOmniVLANode(Node):
                     angular_vel_value_limit = maxw * math.copysign(1.0, angular_vel_value)
 
         return linear_vel_value_limit, angular_vel_value_limit
+    
+    def run(self):
+        while rclpy.ok():
+            rclpy.spin_once(self, timeout_sec=0)  # Process incoming messages
+            self._control_step()
 
-def main():
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run the Path Manager")
+    parser.add_argument("--cmd", type=str, default='/cmd_vel', help="Command topic name")
+    args, ros_args = parser.parse_known_args()
     rclpy.init()
-    node = PlannerOmniVLANode()
+    node = PlannerOmniVLANode(cmd_vel=args.cmd)
     try:
-        rclpy.spin(node)
+        node.run()
+    except KeyboardInterrupt:
+        pass
     finally:
         node.destroy_node()
         rclpy.shutdown()
-
-
-if __name__ == "__main__":
-    main()

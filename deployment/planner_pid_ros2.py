@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 import math
 import threading
 from typing import Optional
@@ -17,7 +18,7 @@ def wrap_angle(angle: float) -> float:
 
 
 class PlannerPIDNode(Node):
-    def __init__(self):
+    def __init__(self, cmd_vel):
         super().__init__("planner_pid")
 
         self.qos_profile = QoSProfile(
@@ -62,18 +63,19 @@ class PlannerPIDNode(Node):
         self._ang_i = 0.0
         self._prev_lin_err: Optional[float] = None
         self._prev_ang_err: Optional[float] = None
+        self.cmd_vel = cmd_vel
 
         # ROS I/O
-        self.pub_cmd = self.create_publisher(Twist, "/cmd_vel", 10)
+        self.pub_cmd = self.create_publisher(Twist, self.cmd_vel, 10)
         self.pub_req_goal = self.create_publisher(Empty, "/req_goal", 10)
 
         self.create_subscription(Odometry, "/odom", self.on_odom, self.qos_profile)
         self.create_subscription(PoseStamped, "/next_goal", self.on_goal, self.qos_profile)
 
-        self.create_timer(self.control_dt, self._control_step)
+        # self.create_timer(self.control_dt, self._control_step)
 
         self.get_logger().info(
-            f"planner_pid ready (k_lin={self.k_linear}, k_ang={self.k_angular}, "
+            f"planner_pid ready (k_lin={self.k_lp}, k_ang={self.k_ap}, "
             f"max_v={self.max_linear}, max_w={self.max_angular}, "
             f"goal_tol={self.goal_tol}, yaw_tol={self.yaw_tol})"
         )
@@ -150,13 +152,22 @@ class PlannerPIDNode(Node):
         cmd.linear.x = v_cmd
         cmd.angular.z = w_cmd
         self.pub_cmd.publish(cmd)
-
+   
+    def run(self):
+        while rclpy.ok():
+            rclpy.spin_once(self, timeout_sec=0)  # Process incoming messages
+            self._control_step()
 
 def main():
     rclpy.init()
-    node = PlannerPIDNode()
+    parser = argparse.ArgumentParser(description="Run the Path Manager")
+    parser.add_argument("--cmd", type=str, default='/cmd_vel', help="Command topic name")
+    args, ros_args = parser.parse_known_args()
+    node = PlannerPIDNode(cmd_vel=args.cmd)
     try:
-        rclpy.spin(node)
+        node.run()
+    except KeyboardInterrupt:
+        pass
     finally:
         node.destroy_node()
         rclpy.shutdown()
