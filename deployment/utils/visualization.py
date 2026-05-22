@@ -76,7 +76,7 @@ def overlay_path(pts_cur: np.ndarray, img: Optional[np.ndarray] = None, cam_matr
     left_2d = project_points_cam(cam_matrix, None, left_c)
     right_2d= project_points_cam(cam_matrix, None, right_c)
     poly_2d = project_points_cam(cam_matrix, None, poly_c)
-
+    
     draw_corridor(img, poly_2d, left_2d, right_2d,
                         fill_alpha=0.35, fill_color=COLOR_FILL, edge_color=COLOR_EDGE, edge_thickness=2)
     draw_polyline(img, ctr_2d, 2, COLOR_FILL)

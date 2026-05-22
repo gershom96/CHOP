@@ -39,7 +39,7 @@ class LaserScanConfig:
 
 class RobotConfig():
 
-    max_speed = 0.3        # [m/s]
+    max_speed = 0.2        # [m/s]
     min_speed = 0.0        # [m/s]
     max_yawrate = 0.2    # [rad/s]
     max_accel = 1          # [m/s^2]
@@ -58,7 +58,7 @@ class RobotConfig():
     robot_radius = 0.2
  
 class Planner(Node):
-    def __init__(self, cmd_topic: str = '/cmd_vel'):
+    def __init__(self, cmd_topic: str = '/cmd_vel', odom_topic: str = '/odom'):
         super().__init__('dwa_costmap')
 
         self.qos_profile = QoSProfile(  
@@ -74,8 +74,9 @@ class Planner(Node):
         self.laserscan_config = LaserScanConfig()
         self.obs_resolution = 0.05
         self.norm_factor = 1 / self.obs_resolution
+        self.odom_topic = odom_topic
         
-        self.sub_odom = self.create_subscription(Odometry, '/odom_lidar', self.on_odom, self.qos_profile)
+        self.sub_odom = self.create_subscription(Odometry, self.odom_topic, self.on_odom, self.qos_profile)
         self.sub_goal = self.create_subscription(PoseStamped, '/next_goal', self.on_goal_cartesian_wf, self.qos_profile)
         # self.sub_laser = self.create_subscription(LaserScan, '/scan', self.on_laserscan , self.qos_profile)
         self.cmd_topic = cmd_topic
@@ -182,7 +183,7 @@ class Planner(Node):
         self.X[2] = self.yaw
         self.X[3] = self.v_x
         self.X[4] = self.w_z
-
+        print("AAwa")
         self.odom_assigned = True
 
     def on_laserscan(self, msg):
@@ -341,6 +342,9 @@ class Planner(Node):
                 trajs.append(traj)
                 action_pairs.append((v, w))
 
+        if len(trajs) == 0:
+            return np.array([0.0, 0.0])
+
         trajs = np.array(trajs)
         # calc costs with weighted gains
         to_goal_costs = self.config.to_goal_cost_gain * self.calc_to_goal_cost(trajs)
@@ -399,9 +403,11 @@ class Planner(Node):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Run the Path Manager")
     parser.add_argument("--cmd", type=str, default='/cmd_vel', help="Command topic name")
+    parser.add_argument("--odom", type=str, default='/odom', help="Odometry topic name")
+
     args, ros_args = parser.parse_known_args()
     rclpy.init()
-    node = Planner(cmd_topic=args.cmd)
+    node = Planner(cmd_topic=args.cmd, odom_topic=args.odom)
     try:
         node.run()
     except KeyboardInterrupt:

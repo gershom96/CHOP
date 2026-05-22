@@ -82,8 +82,9 @@ class ModelNode(Node):
         radius: int = 4,
         close_threshold: int = 3,
         waypoint_index: int = 2,
-        odom_topic: str = "/odom",
-        image_topic: str = "/camera/image_raw/compressed",
+        odom_topic: str = "/odom_lidar",
+        # image_topic: str = "/camera/image_raw/compressed",
+        image_topic: str = "/camera/camera/color/image_raw/compressed",
     ):
         super().__init__("model_node")
 
