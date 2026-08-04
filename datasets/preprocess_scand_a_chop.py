@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import hashlib
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, MutableMapping, Optional, Tuple
@@ -68,8 +69,57 @@ def _extract_path(data: Dict[str, Any], num_points: int) -> Dict[str, Any]:
         "yaws": yaws.tolist(),
     }
 
+TARGET_MODES = ("preferred", "original", "human_guided", "random", "all", "geometric_progress")
+
+
+def _candidate_ids(paths: Dict[str, PathDict]) -> List[str]:
+    """Return numeric candidate ids in a stable order.
+
+    CHOP annotations use id 0 for the SCAND demonstration and id 3 for the
+    human-guided target; ids 1 and 2 are geometric perturbations.
+    """
+    return sorted((str(key) for key in paths), key=lambda key: int(key) if key.isdigit() else key)
+
+
+def _select_targets(
+    paths: Dict[str, PathDict], rankings: List[str], mode: str, seed_key: str
+) -> List[Tuple[str, str]]:
+    """Select (target, comparison) pairs for one controlled ablation mode."""
+    ids = _candidate_ids(paths)
+    ranked = [candidate for candidate in rankings if candidate in paths]
+    if mode not in TARGET_MODES:
+        raise ValueError(f"Unknown target mode {mode!r}; expected one of {TARGET_MODES}")
+    if len(ids) < 2 or len(ranked) < 2:
+        return []
+
+    def comparison_for(target: str) -> str:
+        return next((candidate for candidate in ranked if candidate != target), next(candidate for candidate in ids if candidate != target))
+
+    if mode == "preferred":
+        return [(ranked[0], ranked[1])]
+    if mode == "original":
+        return [("0", comparison_for("0"))] if "0" in paths else []
+    if mode == "human_guided":
+        return [("3", comparison_for("3"))] if "3" in paths else []
+    if mode == "random":
+        digest = hashlib.sha256(seed_key.encode()).digest()
+        target = ids[int.from_bytes(digest[:8], "little") % len(ids)]
+        return [(target, comparison_for(target))]
+    if mode == "all":
+        return [(target, comparison_for(target)) for target in ids]
+
+    # A transparent non-human baseline: choose the candidate with the greatest
+    # terminal forward progress in the robot frame.  It intentionally does not
+    # use preference labels or scene semantics.
+    def progress(candidate: str) -> float:
+        points = np.asarray(paths[candidate].get("points", []), dtype=float)
+        return float(points[-1, 0]) if points.ndim == 2 and len(points) else float("-inf")
+    target = max(ids, key=progress)
+    return [(target, comparison_for(target))]
+
+
 def _process_annotation_file(
-    json_path: Path, images_root: Path, image_ext: str, num_points: int
+    json_path: Path, images_root: Path, image_ext: str, num_points: int, target_mode: str
 ) -> List[Dict[str, Any]]:
     with json_path.open("r") as f:
         raw = json.load(f)
@@ -86,19 +136,16 @@ def _process_annotation_file(
             continue
 
         paths: Dict[str, PathDict] = annotation.get("paths") or {}
-        path_0_data = _extract_path(paths.get(rankings[0]), num_points=num_points)
-        path_1_data = _extract_path(paths.get(rankings[1]), num_points=num_points)
-
-        if not path_0_data or not path_1_data:
-            continue
-
         image_filename = f"img_{stamp}.{image_ext}"
         if not (bag_dir / image_filename).is_file():
             print(f"Warning: missing image file {bag_dir / image_filename}, skipping sample.")
             continue
         image_path = bag_prefix / image_filename
-        processed.append(
-            {
+        for target_id, comparison_id in _select_targets(paths, rankings, target_mode, f"{bag_name}:{stamp}"):
+            path_0_data = _extract_path(paths[target_id], num_points=num_points)
+            path_1_data = _extract_path(paths[comparison_id], num_points=num_points)
+            processed.append(
+                {
                 "timestamp": stamp,
                 "frame_idx": annotation.get("frame_idx"),
                 "robot_width": annotation.get("robot_width"),
@@ -108,8 +155,13 @@ def _process_annotation_file(
                 "position": annotation.get("position"),
                 "yaw": annotation.get("yaw"),
                 "stop": annotation.get("stop", False),
-            }
-        )
+                "target_id": target_id,
+                "comparison_id": comparison_id,
+                "target_mode": target_mode,
+                "ranking": rankings,
+                "pairwise": annotation.get("pairwise", []),
+                }
+            )
 
     return processed
 
@@ -159,6 +211,7 @@ def preprocess_scand(
     image_ext: str = "jpg",
     default_split: str = "train",
     num_points: int = 8,
+    target_mode: str = "preferred",
 ) -> Tuple[int, int]:
     """Generate per-split SCAND-A indices, grouping samples by bag within train/test files."""
     split_map = json.load(test_train_split_json.open("r")) if test_train_split_json.exists() else {}
@@ -171,7 +224,7 @@ def preprocess_scand(
 
     with _JsonArrayWriter(train_path, pretty=True) as train_writer, _JsonArrayWriter(test_path, pretty=True) as test_writer:
         for json_file in sorted(scand_dir.glob("*.json")):
-            entries = _process_annotation_file(json_file, images_root, image_ext, num_points)
+            entries = _process_annotation_file(json_file, images_root, image_ext, num_points, target_mode)
             if not entries:
                 continue
 
@@ -196,6 +249,12 @@ def main() -> None:
         type=Path,
         default=Path(__file__).resolve().parent.parent / "data" / "annotations" / "preferences",
         help="Directory containing SCAND annotation JSON files.",
+    )
+    parser.add_argument(
+        "--target-mode",
+        choices=TARGET_MODES,
+        default="preferred",
+        help="Supervision ablation: preferred, original, human_guided, random, all, or geometric_progress.",
     )
     parser.add_argument(
         "--images-root",
@@ -237,6 +296,7 @@ def main() -> None:
         args.test_train_split_json,
         args.image_ext,
         args.num_points,
+        args.target_mode,
     )
 
     print(f"Wrote {train_count} train samples to {args.output_dir / 'train.json'} (bag-grouped)")

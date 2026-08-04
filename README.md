@@ -30,4 +30,29 @@ pip install -e .
 - `scripts/evaluate_policy.py`: load a checkpoint and compute metrics on val/test splits.
 - `scripts/visualize_counterfactuals.py`: sanity-check counterfactual annotations.
 
+## ICRA revision experiments
+
+The dataset preprocessor supports controlled targets needed to distinguish
+counterfactual human preferences from extra fine-tuning data.  Keep the train,
+test, model, and optimization settings identical across runs.
+
+```bash
+# Repeat once per mode: preferred, original, human_guided, random, all,
+# geometric_progress. Each invocation writes train.json and test.json.
+python datasets/preprocess_scand_a_chop.py \
+  --scand-dir data/annotations/preferences --images-root data/images \
+  --output-dir data/ablations/original --target-mode original
+
+# Report label ambiguity and agreement. The default reads annotator_id from
+# each export, with a parent-directory fallback.
+python evaluation/analyze_annotation_quality.py data/annotations/multi_annotator \
+  --output outputs/annotation_quality.json
+```
+
+For OmniVLA, set `preference_ranking_weight > 0` in the training configuration
+to add the direct Bradley--Terry pairwise trajectory-ranking objective. Set it
+to zero for the original best-trajectory SFT result. Report both objectives
+and all six preprocessing modes rather than attributing improvements solely to
+the preferred target.
+
 #

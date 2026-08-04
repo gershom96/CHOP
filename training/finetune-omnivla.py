@@ -96,6 +96,7 @@ from policy_sources.omnivla.prismatic.vla.constants import ACTION_DIM, NUM_ACTIO
 from policy_sources.omnivla.prismatic.vla.datasets import RLDSBatchTransform, RLDSDataset
 
 from datasets.omnivla_chop_dataset import OmniVLAChopDataset
+from training.preference_losses import trajectory_ranking_loss
 from policy_sources.omnivla.prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
 
 # ==============================
@@ -131,6 +132,8 @@ class OmniVLAConfig:
     save_latest_checkpoint_only: bool = False        # If True, saves only 1 checkpoint, overwriting latest checkpoint
                                                      #   (If False, saves all checkpoints)
     image_aug: bool = True                           # If True, trains with image augmentations (HIGHLY RECOMMENDED)
+    preference_ranking_weight: float = 0.0           # Set >0 for direct Bradley--Terry trajectory ranking
+    preference_temperature: float = 1.0              # Temperature for the pairwise ranking objective
 
     # LoRA
     use_lora: bool = True                            # If True, uses LoRA fine-tuning
@@ -282,6 +285,8 @@ def run_forward_pass(
     action_tokenizer,
     device_id,
     num_patches,
+    preference_ranking_weight=0.0,
+    preference_temperature=1.0,
     idrun=0,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
@@ -400,6 +405,10 @@ def run_forward_pass(
         L2_obj = obj_loss
         L2_smooth = torch.nn.MSELoss()(predicted_actions[:,0:-1], predicted_actions[:,1:])
         neg_action_loss = torch.nn.MSELoss()(neg_action_ref, predicted_actions)
+        ranking_loss, ranking_accuracy = trajectory_ranking_loss(
+            predicted_actions, action_ref, neg_action_ref, preference_temperature
+        )
+        loss = loss + preference_ranking_weight * ranking_loss
 
             
         loss_list = []
@@ -415,6 +424,8 @@ def run_forward_pass(
                 "loss_value": loss.item(),            # Detached value for logging
                 "L2_action_value": L2_action.item(),  # Detached value for logging
                 "L2_neg_action": neg_action_loss.item(),            
+                "preference_ranking_loss": ranking_loss.item(),
+                "preference_pair_accuracy": ranking_accuracy.item(),
                 "L2_obj_value": L2_obj.item(),        # Detached value for logging
                 "L2_smooth_value": L2_smooth.item(),  # Detached value for logging                  
                 "L2_sate": loss_list[0].item(),
@@ -966,6 +977,8 @@ def train_omnivla(cfg: OmniVLAConfig) -> None:
         "loss_value": deque(maxlen=cfg.grad_accumulation_steps),
         "L2_action_value": deque(maxlen=cfg.grad_accumulation_steps),
         "L2_neg_action": deque(maxlen=cfg.grad_accumulation_steps),
+        "preference_ranking_loss": deque(maxlen=cfg.grad_accumulation_steps),
+        "preference_pair_accuracy": deque(maxlen=cfg.grad_accumulation_steps),
         "L2_obj_value": deque(maxlen=cfg.grad_accumulation_steps),
         "L2_smooth_value": deque(maxlen=cfg.grad_accumulation_steps),             
         "L2_sate": deque(maxlen=cfg.grad_accumulation_steps),
@@ -1027,6 +1040,8 @@ def train_omnivla(cfg: OmniVLAConfig) -> None:
                     action_tokenizer=action_tokenizer,
                     device_id=device_id,
                     num_patches=NUM_PATCHES,
+                    preference_ranking_weight=cfg.preference_ranking_weight,
+                    preference_temperature=cfg.preference_temperature,
                     idrun=batch_idx,
                 )
                 # Normalize loss to account for gradient accumulation
