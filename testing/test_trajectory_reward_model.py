@@ -33,6 +33,14 @@ def test_bradley_terry_prefers_larger_scores():
     assert accuracy == 1.0
 
 
+def test_stationary_path_has_an_explicit_geometry_signal():
+    path = torch.zeros(1, 3, 2)
+    features, _ = TrajectoryAnchorRewardModel._trajectory_features(path)
+    assert features.shape[-1] == 10
+    assert features[..., -2].eq(0).all()  # raw segment length
+    assert features[..., -1].eq(1).all()  # stationary trajectory flag
+
+
 def test_pairwise_step_reuses_one_image_encoding():
     class CountingEncoder(nn.Module):
         def __init__(self, encoder):
