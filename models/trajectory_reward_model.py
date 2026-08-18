@@ -154,6 +154,10 @@ class TrajectoryAnchorRewardModel(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
         )
         self.visual_projection = nn.Linear(feature_dim, hidden_dim)
+        # A path can legitimately leave the camera field of view.  Preserve a
+        # valid sequence token in that case, while explicitly marking that it
+        # has no visual anchor rather than confusing zero padding with evidence.
+        self.out_of_view_token = nn.Parameter(torch.zeros(hidden_dim))
         # The calibrated footprint samples are pooled below; these are learned
         # query-conditioned local corrections in normalized image units.
         self.offset_head = nn.Linear(hidden_dim, num_samples * 2)
@@ -291,12 +295,18 @@ class TrajectoryAnchorRewardModel(nn.Module):
             if waypoint_valid.shape != anchor_valid.shape:
                 raise ValueError("waypoint_valid must have shape (B, K)")
             anchor_valid = anchor_valid & waypoint_valid.bool()
-        if not anchor_valid.any(dim=1).all():
-            raise ValueError(
-                "at least one valid, in-view projected waypoint is required per path; "
-                "check camera calibration, path frame, and image resolution"
-            )
+        no_visual_anchor = ~anchor_valid.any(dim=1)
+        if no_visual_anchor.any():
+            # grid_sample returns zeros outside the image, so make precisely
+            # one token attendable and attach an explicit learned sentinel.
+            # The geometry sequence remains available, but the reward head can
+            # learn that this candidate has no image-grounded evidence.
+            anchor_valid = anchor_valid.clone()
+            anchor_valid[no_visual_anchor, 0] = True
         query = geometry_query + self.visual_projection(base_visual)
+        if no_visual_anchor.any():
+            query = query.clone()
+            query[no_visual_anchor, 0] += self.out_of_view_token
         local_visual, sampling_weights = self._sample_visual_features(feature_map, query, anchor_grid, anchor_valid)
         tokens = query + self.visual_projection(local_visual)
         tokens = self.trajectory_encoder(tokens, src_key_padding_mask=~anchor_valid)
@@ -307,5 +317,6 @@ class TrajectoryAnchorRewardModel(nn.Module):
         return score, {
             "anchor_grid": anchor_grid,
             "anchor_valid": anchor_valid,
+            "no_visual_anchor": no_visual_anchor,
             "sampling_weights": sampling_weights,
         }

@@ -60,3 +60,15 @@ def test_pairwise_step_reuses_one_image_encoding():
     })
     assert torch.isfinite(loss)
     assert model.image_encoder.calls == 1
+
+
+def test_model_marks_an_entirely_out_of_view_path_without_crashing():
+    model = TrajectoryAnchorRewardModel(
+        feature_dim=24, hidden_dim=24, num_heads=4, num_layers=1, vision_backbone="cnn"
+    )
+    image = torch.randn(1, 3, 48, 64)
+    path = torch.tensor([[[1., 0.], [2., 0.], [3., .1]]])
+    # These extrinsics leave the z=0 base-plane path behind the camera.
+    score, details = model(image, path, torch.eye(3).unsqueeze(0), torch.eye(4).unsqueeze(0), return_details=True)
+    assert torch.isfinite(score).all()
+    assert details["no_visual_anchor"].item()
