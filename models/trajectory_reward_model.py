@@ -153,7 +153,7 @@ class TrajectoryAnchorRewardModel(nn.Module):
         else:
             raise ValueError("vision_backbone must be 'dinov3' or 'cnn'")
         self.geometry_encoder = nn.Sequential(
-            nn.Linear(10, hidden_dim), nn.GELU(), nn.LayerNorm(hidden_dim),
+            nn.Linear(8, hidden_dim), nn.GELU(), nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, hidden_dim),
         )
         self.waypoint_query_embedding = nn.Embedding(max_waypoints, hidden_dim)
@@ -177,7 +177,7 @@ class TrajectoryAnchorRewardModel(nn.Module):
 
     @staticmethod
     def _trajectory_features(path_points: Tensor) -> Tuple[Tensor, Tensor]:
-        """Return geometry features and a base-frame footprint direction."""
+        """Return 8-D waypoint features and a base-frame footprint direction."""
         if path_points.ndim != 3 or path_points.shape[-1] not in (2, 3):
             raise ValueError("path_points must be (B, K, 2) or (B, K, 3)")
         xy = path_points[..., :2]
@@ -187,21 +187,16 @@ class TrajectoryAnchorRewardModel(nn.Module):
         delta = torch.diff(xy, dim=1, prepend=torch.zeros_like(xy[:, :1]))
         # The first waypoint's tangent is inferred from its successor.
         delta[:, 0] = xy[:, 1] - xy[:, 0]
-        raw_segment = delta.norm(dim=-1)
-        segment = raw_segment.clamp_min(1e-5)
+        segment = delta.norm(dim=-1).clamp_min(1e-5)
         tangent = delta / segment.unsqueeze(-1)
         yaw = torch.atan2(tangent[..., 1], tangent[..., 0])
-        arc = raw_segment.cumsum(dim=1)
+        arc = segment.cumsum(dim=1)
         time = torch.linspace(0, 1, steps, device=xy.device, dtype=xy.dtype).expand(bsz, -1)
         curvature = torch.diff(yaw, dim=1, prepend=yaw[:, :1])
         z = path_points[..., 2] if path_points.shape[-1] == 3 else torch.zeros_like(time)
-        # A zero-motion path is semantically a stop command, not an accidental
-        # sequence of tiny segments. Keep it as an explicit learned signal.
-        stationary = ((xy - xy[:, :1]).norm(dim=-1).amax(dim=1, keepdim=True) < 0.02)
-        stationary = stationary.to(xy.dtype).expand(-1, steps)
         features = torch.stack((
             xy[..., 0], xy[..., 1], z, torch.sin(yaw), torch.cos(yaw),
-            arc, time, curvature, raw_segment, stationary,
+            arc, time, curvature,
         ), dim=-1)
         # Normal points left of travel; sampling +/- normal covers robot width.
         normal = torch.stack((-tangent[..., 1], tangent[..., 0]), dim=-1)
