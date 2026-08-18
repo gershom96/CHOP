@@ -223,7 +223,7 @@ class TrajectoryAnchorRewardModel(nn.Module):
         return torch.stack((x, y), dim=-1)
 
     def _sample_visual_features(
-        self, feature_map: Tensor, query: Tensor, anchors: Tensor, anchor_valid: Tensor
+        self, feature_map: Tensor, query: Tensor, anchors: Tensor, waypoint_valid: Tensor
     ) -> Tuple[Tensor, Tensor]:
         """Multi-head deformable cross-attention around projected anchors."""
         batch_size, channels, _, _ = feature_map.shape
@@ -248,7 +248,7 @@ class TrajectoryAnchorRewardModel(nn.Module):
             torch.eye(heads, device=feature_map.device, dtype=feature_map.dtype),
         )
         weights = self.weight_head(query).view(batch_size, steps, heads, samples_per_head)
-        weights = weights.masked_fill(~anchor_valid[:, :, None, None], -1e4).softmax(dim=-1)
+        weights = weights.masked_fill(~waypoint_valid[:, :, None, None], -1e4).softmax(dim=-1)
         visual = (sampled * weights.unsqueeze(-1)).sum(dim=3).reshape(batch_size, steps, channels)
         return visual, weights
 
@@ -288,28 +288,28 @@ class TrajectoryAnchorRewardModel(nn.Module):
         # anchors; they are not learned image-space boxes or masks.
         uv, visible = self._project(xyz, intrinsics, t_cam_from_base)
         anchor_grid = self._to_grid(uv, image.shape[-2], image.shape[-1])
-        anchor_valid = visible & (anchor_grid.abs() <= 1).all(dim=-1)
+        visual_anchor_in_image = visible & (anchor_grid.abs() <= 1).all(dim=-1)
+        sequence_valid = torch.ones_like(visual_anchor_in_image)
         feature_map = self.encode_image(image) if encoded_image_features is None else encoded_image_features
         if waypoint_valid is not None:
-            if waypoint_valid.shape != anchor_valid.shape:
+            if waypoint_valid.shape != sequence_valid.shape:
                 raise ValueError("waypoint_valid must have shape (B, K)")
-            anchor_valid = anchor_valid & waypoint_valid.bool()
-        if not anchor_valid.any(dim=1).all():
-            raise ValueError(
-                "at least one valid, in-view projected waypoint is required per path; "
-                "filter ungrounded pairs or check camera calibration and frames"
-            )
+            sequence_valid = waypoint_valid.bool()
         waypoint_ids = torch.arange(xyz.shape[1], device=xyz.device)
         query = geometry_query + self.waypoint_query_embedding(waypoint_ids).unsqueeze(0)
-        local_visual, sampling_weights = self._sample_visual_features(feature_map, query, anchor_grid, anchor_valid)
+        # Out-of-frame points remain part of the trajectory. grid_sample gives
+        # zero local visual evidence there, while learned offsets can still
+        # reach nearby in-frame context.
+        local_visual, sampling_weights = self._sample_visual_features(feature_map, query, anchor_grid, sequence_valid)
         tokens = query + self.visual_projection(local_visual)
-        tokens = self.trajectory_encoder(tokens, src_key_padding_mask=~anchor_valid)
-        pooled = (tokens * anchor_valid.unsqueeze(-1)).sum(dim=1) / anchor_valid.sum(dim=1, keepdim=True).clamp_min(1)
+        tokens = self.trajectory_encoder(tokens, src_key_padding_mask=~sequence_valid)
+        pooled = (tokens * sequence_valid.unsqueeze(-1)).sum(dim=1) / sequence_valid.sum(dim=1, keepdim=True).clamp_min(1)
         score = self.reward_head(pooled).squeeze(-1)
         if not return_details:
             return score
         return score, {
             "anchor_grid": anchor_grid,
-            "anchor_valid": anchor_valid,
+            "anchor_valid": sequence_valid,
+            "visual_anchor_in_image": visual_anchor_in_image,
             "sampling_weights": sampling_weights,
         }

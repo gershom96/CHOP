@@ -16,39 +16,18 @@ from models.trajectory_reward_model import TrajectoryAnchorRewardModel
 from training.train_reward_model import reward_model_pairwise_step
 
 
-def _grounded_subset(batch):
-    """Drop pair labels lacking image-grounded evidence for either path."""
-    keep = batch["preferred_has_visible_anchor"].bool() & batch["rejected_has_visible_anchor"].bool()
-    if not keep.any():
-        return None, int(keep.numel())
-    return {
-        key: value[keep] if isinstance(value, torch.Tensor) and value.ndim and value.shape[0] == keep.shape[0] else value
-        for key, value in batch.items()
-    }, int((~keep).sum())
-
-
 def _evaluate(model, loader, device):
     model.eval()
-    values = {"loss": 0.0, "accuracy": 0.0, "count": 0, "skipped": 0}
+    values = {"loss": 0.0, "accuracy": 0.0, "count": 0}
     with torch.no_grad():
         for batch in loader:
-            batch, skipped = _grounded_subset(batch)
-            values["skipped"] += skipped
-            if batch is None:
-                continue
             batch = {key: value.to(device, non_blocking=True) if isinstance(value, torch.Tensor) else value for key, value in batch.items()}
             loss, metrics = reward_model_pairwise_step(model, batch)
             n = batch["image"].shape[0]
             values["loss"] += loss.item() * n
             values["accuracy"] += metrics["reward_pair_accuracy"] * n
             values["count"] += n
-    if not values["count"]:
-        raise RuntimeError("No held-out pairs have visible anchors for both candidates")
-    return {
-        "loss": values["loss"] / values["count"],
-        "accuracy": values["accuracy"] / values["count"],
-        "skipped": values["skipped"],
-    }
+    return {key: values[key] / values["count"] for key in ("loss", "accuracy")}
 
 
 def _init_wandb(args: argparse.Namespace, device: torch.device) -> Optional[Any]:
@@ -110,12 +89,7 @@ def main():
     for epoch in range(1, args.epochs + 1):
         model.train()
         total_loss, seen = 0.0, 0
-        skipped_train = 0
         for batch in train_loader:
-            batch, skipped = _grounded_subset(batch)
-            skipped_train += skipped
-            if batch is None:
-                continue
             batch = {key: value.to(device, non_blocking=True) if isinstance(value, torch.Tensor) else value for key, value in batch.items()}
             optimizer.zero_grad(set_to_none=True)
             loss, _ = reward_model_pairwise_step(model, batch)
@@ -128,17 +102,13 @@ def main():
             if run is not None and global_step % args.wandb_log_freq == 0:
                 run.log({"train/bt_loss": loss.item(), "train/epoch": epoch}, step=global_step)
         metrics = _evaluate(model, test_loader, device)
-        if not seen:
-            raise RuntimeError("No training pairs have visible anchors for both candidates")
         train_loss = total_loss / seen
-        print(f"epoch={epoch} train_bt_loss={train_loss:.4f} test_bt_loss={metrics['loss']:.4f} test_pair_accuracy={metrics['accuracy']:.4f} skipped_train={skipped_train} skipped_test={metrics['skipped']}")
+        print(f"epoch={epoch} train_bt_loss={train_loss:.4f} test_bt_loss={metrics['loss']:.4f} test_pair_accuracy={metrics['accuracy']:.4f}")
         if run is not None:
             run.log({
                 "train/epoch_bt_loss": train_loss,
                 "eval/bt_loss": metrics["loss"],
                 "eval/pair_accuracy": metrics["accuracy"],
-                "data/skipped_train_pairs": skipped_train,
-                "data/skipped_test_pairs": metrics["skipped"],
                 "epoch": epoch,
             }, step=global_step)
         if metrics["accuracy"] > best_accuracy:
