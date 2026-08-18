@@ -235,6 +235,12 @@ class TrajectoryAnchorRewardModel(nn.Module):
         visual = (sampled * weights.unsqueeze(-1)).sum(dim=2)
         return visual, weights
 
+    def encode_image(self, image: Tensor) -> Tensor:
+        """Encode an image once for one or more candidate-path scores."""
+        if image.ndim != 4 or image.shape[1] != 3:
+            raise ValueError("image must have shape (B, 3, H, W)")
+        return self.image_encoder(image)
+
     def forward(
         self,
         image: Tensor,
@@ -242,6 +248,7 @@ class TrajectoryAnchorRewardModel(nn.Module):
         intrinsics: Tensor,
         t_cam_from_base: Tensor,
         waypoint_valid: Optional[Tensor] = None,
+        encoded_image_features: Optional[Tensor] = None,
         return_details: bool = False,
     ) -> Tensor | Tuple[Tensor, dict[str, Tensor]]:
         """Return one scalar preference score per candidate trajectory.
@@ -253,6 +260,8 @@ class TrajectoryAnchorRewardModel(nn.Module):
             raise ValueError("image must have shape (B, 3, H, W)")
         if image.shape[0] != path_points.shape[0]:
             raise ValueError("image and path_points batch dimensions must match")
+        if encoded_image_features is not None and encoded_image_features.shape[0] != image.shape[0]:
+            raise ValueError("encoded_image_features batch dimension must match image")
         features, normal = self._trajectory_features(path_points)
         geometry_query = self.geometry_encoder(features)
         xyz = path_points if path_points.shape[-1] == 3 else torch.cat((path_points, torch.zeros_like(path_points[..., :1])), dim=-1)
@@ -269,7 +278,7 @@ class TrajectoryAnchorRewardModel(nn.Module):
         footprint_valid = visible & in_image
         # Pool calibrated centre/left/right references.  This is not a mask:
         # each waypoint keeps an ordered visual token.
-        feature_map = self.image_encoder(image)
+        feature_map = self.encode_image(image) if encoded_image_features is None else encoded_image_features
         base_samples = F.grid_sample(
             feature_map, grid.view(image.shape[0], -1, 1, 2), mode="bilinear",
             padding_mode="zeros", align_corners=True,
