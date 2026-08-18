@@ -1,0 +1,248 @@
+"""Trajectory-conditioned visual reward model for CHOP.
+
+Each local path waypoint is an anchor query: its metric base-frame position is
+projected through the calibrated camera model, then it samples visual features
+at learned offsets around that image reference.  This is a lightweight,
+Deformable-DETR-style alternative to rasterising a trajectory into a mask.
+
+The model scores *one* trajectory at a time::
+
+    score = reward_model(image, path_points, intrinsics, T_cam_from_base)
+
+It can therefore be trained on raw winner/loser labels using
+``bradley_terry_loss`` and used to rerank candidates from any policy.  It is
+not a policy and should not be used to produce actions directly.
+"""
+
+from __future__ import annotations
+
+from typing import Optional, Tuple
+
+import torch
+from torch import Tensor, nn
+import torch.nn.functional as F
+
+
+def bradley_terry_loss(
+    preferred_scores: Tensor,
+    rejected_scores: Tensor,
+    temperature: float = 1.0,
+) -> Tuple[Tensor, Tensor]:
+    """Negative Bradley--Terry log-likelihood and pairwise accuracy."""
+    if temperature <= 0:
+        raise ValueError("temperature must be positive")
+    preferred_scores = preferred_scores.reshape(-1)
+    rejected_scores = rejected_scores.reshape(-1)
+    if preferred_scores.shape != rejected_scores.shape:
+        raise ValueError("preferred_scores and rejected_scores must have equal shape")
+    logits = (preferred_scores - rejected_scores) / temperature
+    return F.softplus(-logits).mean(), (logits > 0).float().mean()
+
+
+class _ImageEncoder(nn.Module):
+    """Small convolutional feature pyramid used when a VLA encoder is absent."""
+
+    def __init__(self, feature_dim: int) -> None:
+        super().__init__()
+        width = max(feature_dim // 2, 32)
+        self.net = nn.Sequential(
+            nn.Conv2d(3, width, 5, stride=2, padding=2), nn.GELU(),
+            nn.Conv2d(width, width, 3, stride=2, padding=1), nn.GELU(),
+            nn.Conv2d(width, feature_dim, 3, stride=2, padding=1), nn.GELU(),
+        )
+
+    def forward(self, image: Tensor) -> Tensor:
+        return self.net(image)
+
+
+def _as_batch(matrix: Tensor, batch_size: int, rows: int, cols: int, name: str) -> Tensor:
+    if matrix.ndim == 2:
+        matrix = matrix.unsqueeze(0)
+    if matrix.ndim != 3 or matrix.shape[-2:] != (rows, cols):
+        raise ValueError(f"{name} must have shape ({rows}, {cols}) or (B, {rows}, {cols})")
+    if matrix.shape[0] not in (1, batch_size):
+        raise ValueError(f"{name} batch dimension must be 1 or match images")
+    return matrix.expand(batch_size, -1, -1)
+
+
+class TrajectoryAnchorRewardModel(nn.Module):
+    """Score a candidate local trajectory from visual evidence along its path.
+
+    Coordinates use CHOP's base frame: ``x`` forward, ``y`` lateral, and
+    optional ``z`` up.  ``T_cam_from_base`` must map homogeneous base-frame
+    points to the camera frame used by ``intrinsics``.  This calibration is
+    required by design: it anchors visual attention to physically meaningful
+    locations rather than asking the model to infer camera geometry from
+    preference labels alone.
+    """
+
+    def __init__(
+        self,
+        feature_dim: int = 192,
+        hidden_dim: int = 192,
+        num_heads: int = 6,
+        num_layers: int = 2,
+        num_samples: int = 5,
+        footprint_width: float = 0.50,
+        max_offset_fraction: float = 0.12,
+    ) -> None:
+        super().__init__()
+        if hidden_dim % num_heads:
+            raise ValueError("hidden_dim must be divisible by num_heads")
+        if num_samples < 1:
+            raise ValueError("num_samples must be positive")
+        self.num_samples = num_samples
+        self.footprint_width = footprint_width
+        self.max_offset_fraction = max_offset_fraction
+        self.image_encoder = _ImageEncoder(feature_dim)
+        self.geometry_encoder = nn.Sequential(
+            nn.Linear(8, hidden_dim), nn.GELU(), nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+        self.visual_projection = nn.Linear(feature_dim, hidden_dim)
+        # The calibrated footprint samples are pooled below; these are learned
+        # query-conditioned local corrections in normalized image units.
+        self.offset_head = nn.Linear(hidden_dim, num_samples * 2)
+        self.weight_head = nn.Linear(hidden_dim, num_samples)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim, nhead=num_heads, dim_feedforward=hidden_dim * 4,
+            dropout=0.1, activation="gelu", batch_first=True, norm_first=True,
+        )
+        self.trajectory_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.reward_head = nn.Sequential(
+            nn.LayerNorm(hidden_dim), nn.Linear(hidden_dim, hidden_dim), nn.GELU(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    @staticmethod
+    def _trajectory_features(path_points: Tensor) -> Tuple[Tensor, Tensor]:
+        """Return 8-D waypoint features and a base-frame footprint direction."""
+        if path_points.ndim != 3 or path_points.shape[-1] not in (2, 3):
+            raise ValueError("path_points must be (B, K, 2) or (B, K, 3)")
+        xy = path_points[..., :2]
+        bsz, steps, _ = xy.shape
+        if steps < 2:
+            raise ValueError("at least two waypoints are required")
+        delta = torch.diff(xy, dim=1, prepend=torch.zeros_like(xy[:, :1]))
+        # The first waypoint's tangent is inferred from its successor.
+        delta[:, 0] = xy[:, 1] - xy[:, 0]
+        segment = delta.norm(dim=-1).clamp_min(1e-5)
+        tangent = delta / segment.unsqueeze(-1)
+        yaw = torch.atan2(tangent[..., 1], tangent[..., 0])
+        arc = segment.cumsum(dim=1)
+        time = torch.linspace(0, 1, steps, device=xy.device, dtype=xy.dtype).expand(bsz, -1)
+        curvature = torch.diff(yaw, dim=1, prepend=yaw[:, :1])
+        z = path_points[..., 2] if path_points.shape[-1] == 3 else torch.zeros_like(time)
+        features = torch.stack((
+            xy[..., 0], xy[..., 1], z, torch.sin(yaw), torch.cos(yaw),
+            arc, time, curvature,
+        ), dim=-1)
+        # Normal points left of travel; sampling +/- normal covers robot width.
+        normal = torch.stack((-tangent[..., 1], tangent[..., 0]), dim=-1)
+        return features, normal
+
+    @staticmethod
+    def _project(points: Tensor, intrinsics: Tensor, t_cam_from_base: Tensor) -> Tuple[Tensor, Tensor]:
+        """Project BxKx3 base points to normalized grid-sample coordinates."""
+        batch_size, steps, _ = points.shape
+        intrinsics = _as_batch(intrinsics, batch_size, 3, 3, "intrinsics").to(points)
+        transform = _as_batch(t_cam_from_base, batch_size, 4, 4, "T_cam_from_base").to(points)
+        homogeneous = torch.cat((points, torch.ones_like(points[..., :1])), dim=-1)
+        camera = torch.einsum("bij,bkj->bki", transform, homogeneous)[..., :3]
+        depth = camera[..., 2]
+        pixels = torch.einsum("bij,bkj->bki", intrinsics, camera)
+        uv = pixels[..., :2] / depth.clamp_min(1e-5).unsqueeze(-1)
+        # uv is converted to a normalized grid after image dimensions are known.
+        return uv, depth > 1e-4
+
+    @staticmethod
+    def _to_grid(uv: Tensor, image_height: int, image_width: int) -> Tensor:
+        x = 2 * uv[..., 0] / max(image_width - 1, 1) - 1
+        y = 2 * uv[..., 1] / max(image_height - 1, 1) - 1
+        return torch.stack((x, y), dim=-1)
+
+    def _sample_visual_features(
+        self, feature_map: Tensor, query: Tensor, anchors: Tensor, anchor_valid: Tensor
+    ) -> Tuple[Tensor, Tensor]:
+        """Deformable local cross-attention around projected waypoint anchors."""
+        batch_size, _, feature_height, feature_width = feature_map.shape
+        _, steps, _ = anchors.shape
+        offsets = torch.tanh(self.offset_head(query)).view(batch_size, steps, self.num_samples, 2)
+        offsets = offsets * self.max_offset_fraction
+        # Anchor offsets are in normalized image coordinates.  They are learned
+        # after a calibrated centre/footprint reference has been supplied.
+        grids = anchors.unsqueeze(2) + offsets
+        sampled = F.grid_sample(
+            feature_map, grids.view(batch_size, steps * self.num_samples, 1, 2),
+            mode="bilinear", padding_mode="zeros", align_corners=True,
+        ).squeeze(-1).transpose(1, 2).view(batch_size, steps, self.num_samples, -1)
+        weights = self.weight_head(query).masked_fill(~anchor_valid.unsqueeze(-1), -1e4)
+        weights = weights.softmax(dim=-1)
+        visual = (sampled * weights.unsqueeze(-1)).sum(dim=2)
+        return visual, weights
+
+    def forward(
+        self,
+        image: Tensor,
+        path_points: Tensor,
+        intrinsics: Tensor,
+        t_cam_from_base: Tensor,
+        waypoint_valid: Optional[Tensor] = None,
+        return_details: bool = False,
+    ) -> Tensor | Tuple[Tensor, dict[str, Tensor]]:
+        """Return one scalar preference score per candidate trajectory.
+
+        ``image`` is Bx3xHxW, and point units must match calibration units
+        (meters for CHOP).  Higher scores mean more preferred.
+        """
+        if image.ndim != 4 or image.shape[1] != 3:
+            raise ValueError("image must have shape (B, 3, H, W)")
+        if image.shape[0] != path_points.shape[0]:
+            raise ValueError("image and path_points batch dimensions must match")
+        features, normal = self._trajectory_features(path_points)
+        geometry_query = self.geometry_encoder(features)
+        xyz = path_points if path_points.shape[-1] == 3 else torch.cat((path_points, torch.zeros_like(path_points[..., :1])), dim=-1)
+        # Centre plus three deterministic footprint anchors.  The learned
+        # offsets then refine these local visual samples.
+        lateral = torch.tensor((-0.5, 0.0, 0.5), device=xyz.device, dtype=xyz.dtype) * self.footprint_width
+        footprint_xy = xyz[..., :2].unsqueeze(2) + normal.unsqueeze(2) * lateral.view(1, 1, -1, 1)
+        footprint_xyz = torch.cat((footprint_xy, xyz[..., 2:].unsqueeze(2).expand(-1, -1, 3, -1)), dim=-1)
+        uv, visible = self._project(footprint_xyz.flatten(1, 2), intrinsics, t_cam_from_base)
+        uv = uv.view(xyz.shape[0], xyz.shape[1], 3, 2)
+        visible = visible.view(xyz.shape[0], xyz.shape[1], 3)
+        grid = self._to_grid(uv, image.shape[-2], image.shape[-1])
+        in_image = (grid.abs() <= 1).all(dim=-1)
+        footprint_valid = visible & in_image
+        # Pool calibrated centre/left/right references.  This is not a mask:
+        # each waypoint keeps an ordered visual token.
+        feature_map = self.image_encoder(image)
+        base_samples = F.grid_sample(
+            feature_map, grid.view(image.shape[0], -1, 1, 2), mode="bilinear",
+            padding_mode="zeros", align_corners=True,
+        ).squeeze(-1).transpose(1, 2).view(image.shape[0], xyz.shape[1], 3, -1)
+        denom = footprint_valid.sum(dim=-1, keepdim=True).clamp_min(1).to(base_samples.dtype)
+        base_visual = (base_samples * footprint_valid.unsqueeze(-1)).sum(dim=2) / denom
+        anchor_grid = (grid * footprint_valid.unsqueeze(-1)).sum(dim=2) / denom
+        anchor_valid = footprint_valid.any(dim=-1)
+        if waypoint_valid is not None:
+            if waypoint_valid.shape != anchor_valid.shape:
+                raise ValueError("waypoint_valid must have shape (B, K)")
+            anchor_valid = anchor_valid & waypoint_valid.bool()
+        if not anchor_valid.any(dim=1).all():
+            raise ValueError(
+                "at least one valid, in-view projected waypoint is required per path; "
+                "check camera calibration, path frame, and image resolution"
+            )
+        query = geometry_query + self.visual_projection(base_visual)
+        local_visual, sampling_weights = self._sample_visual_features(feature_map, query, anchor_grid, anchor_valid)
+        tokens = query + self.visual_projection(local_visual)
+        tokens = self.trajectory_encoder(tokens, src_key_padding_mask=~anchor_valid)
+        pooled = (tokens * anchor_valid.unsqueeze(-1)).sum(dim=1) / anchor_valid.sum(dim=1, keepdim=True).clamp_min(1)
+        score = self.reward_head(pooled).squeeze(-1)
+        if not return_details:
+            return score
+        return score, {
+            "anchor_grid": anchor_grid,
+            "anchor_valid": anchor_valid,
+            "sampling_weights": sampling_weights,
+        }
