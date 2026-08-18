@@ -129,8 +129,8 @@ class TrajectoryAnchorRewardModel(nn.Module):
         num_heads: int = 6,
         num_layers: int = 2,
         num_samples: int = 4,
-        footprint_width: float = 0.50,
         max_offset_fraction: float = 0.12,
+        max_waypoints: int = 32,
         vision_backbone: str = "dinov3",
         dinov3_model_name: str = "facebook/dinov3-vits16-pretrain-lvd1689m",
     ) -> None:
@@ -139,10 +139,12 @@ class TrajectoryAnchorRewardModel(nn.Module):
             raise ValueError("hidden_dim must be divisible by num_heads")
         if num_samples < 1:
             raise ValueError("num_samples must be positive")
+        if max_waypoints < 2:
+            raise ValueError("max_waypoints must be at least two")
         self.num_samples = num_samples
         self.cross_attention_heads = num_heads
-        self.footprint_width = footprint_width
         self.max_offset_fraction = max_offset_fraction
+        self.max_waypoints = max_waypoints
         if vision_backbone == "dinov3":
             self.image_encoder = _DinoV3Encoder(dinov3_model_name)
             feature_dim = self.image_encoder.feature_dim
@@ -154,6 +156,7 @@ class TrajectoryAnchorRewardModel(nn.Module):
             nn.Linear(8, hidden_dim), nn.GELU(), nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, hidden_dim),
         )
+        self.waypoint_query_embedding = nn.Embedding(max_waypoints, hidden_dim)
         if feature_dim % self.cross_attention_heads:
             raise ValueError("feature_dim must be divisible by num_heads for deformable attention")
         self.visual_projection = nn.Linear(feature_dim, hidden_dim)
@@ -276,31 +279,17 @@ class TrajectoryAnchorRewardModel(nn.Module):
             raise ValueError("image and path_points batch dimensions must match")
         if encoded_image_features is not None and encoded_image_features.shape[0] != image.shape[0]:
             raise ValueError("encoded_image_features batch dimension must match image")
-        features, normal = self._trajectory_features(path_points)
+        features, _ = self._trajectory_features(path_points)
         geometry_query = self.geometry_encoder(features)
         xyz = path_points if path_points.shape[-1] == 3 else torch.cat((path_points, torch.zeros_like(path_points[..., :1])), dim=-1)
-        # Centre plus three deterministic footprint anchors.  The learned
-        # offsets then refine these local visual samples.
-        lateral = torch.tensor((-0.5, 0.0, 0.5), device=xyz.device, dtype=xyz.dtype) * self.footprint_width
-        footprint_xy = xyz[..., :2].unsqueeze(2) + normal.unsqueeze(2) * lateral.view(1, 1, -1, 1)
-        footprint_xyz = torch.cat((footprint_xy, xyz[..., 2:].unsqueeze(2).expand(-1, -1, 3, -1)), dim=-1)
-        uv, visible = self._project(footprint_xyz.flatten(1, 2), intrinsics, t_cam_from_base)
-        uv = uv.view(xyz.shape[0], xyz.shape[1], 3, 2)
-        visible = visible.view(xyz.shape[0], xyz.shape[1], 3)
-        grid = self._to_grid(uv, image.shape[-2], image.shape[-1])
-        in_image = (grid.abs() <= 1).all(dim=-1)
-        footprint_valid = visible & in_image
-        # Pool calibrated centre/left/right references.  This is not a mask:
-        # each waypoint keeps an ordered visual token.
+        if xyz.shape[1] > self.max_waypoints:
+            raise ValueError(f"at most {self.max_waypoints} waypoints are supported")
+        # Path points supply fixed, calibrated Deformable-DETR reference
+        # anchors; they are not learned image-space boxes or masks.
+        uv, visible = self._project(xyz, intrinsics, t_cam_from_base)
+        anchor_grid = self._to_grid(uv, image.shape[-2], image.shape[-1])
+        anchor_valid = visible & (anchor_grid.abs() <= 1).all(dim=-1)
         feature_map = self.encode_image(image) if encoded_image_features is None else encoded_image_features
-        base_samples = F.grid_sample(
-            feature_map, grid.view(image.shape[0], -1, 1, 2), mode="bilinear",
-            padding_mode="zeros", align_corners=True,
-        ).squeeze(-1).transpose(1, 2).view(image.shape[0], xyz.shape[1], 3, -1)
-        denom = footprint_valid.sum(dim=-1, keepdim=True).clamp_min(1).to(base_samples.dtype)
-        base_visual = (base_samples * footprint_valid.unsqueeze(-1)).sum(dim=2) / denom
-        anchor_grid = (grid * footprint_valid.unsqueeze(-1)).sum(dim=2) / denom
-        anchor_valid = footprint_valid.any(dim=-1)
         if waypoint_valid is not None:
             if waypoint_valid.shape != anchor_valid.shape:
                 raise ValueError("waypoint_valid must have shape (B, K)")
@@ -310,7 +299,8 @@ class TrajectoryAnchorRewardModel(nn.Module):
                 "at least one valid, in-view projected waypoint is required per path; "
                 "filter ungrounded pairs or check camera calibration and frames"
             )
-        query = geometry_query + self.visual_projection(base_visual)
+        waypoint_ids = torch.arange(xyz.shape[1], device=xyz.device)
+        query = geometry_query + self.waypoint_query_embedding(waypoint_ids).unsqueeze(0)
         local_visual, sampling_weights = self._sample_visual_features(feature_map, query, anchor_grid, anchor_valid)
         tokens = query + self.visual_projection(local_visual)
         tokens = self.trajectory_encoder(tokens, src_key_padding_mask=~anchor_valid)

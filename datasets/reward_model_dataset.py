@@ -44,6 +44,18 @@ def _split_bags(index_path: Optional[Path]) -> Optional[set[str]]:
     return {Path(row["bag"]).stem for row in json.loads(index_path.read_text())}
 
 
+def _has_visible_anchor(points: Tensor, intrinsics: Tensor, transform: Tensor, height: int, width: int) -> Tensor:
+    """Whether a candidate has visual evidence in the resized camera image."""
+    xyz = points if points.shape[-1] == 3 else torch.cat((points, torch.zeros_like(points[..., :1])), dim=-1)
+    homogeneous = torch.cat((xyz, torch.ones_like(xyz[..., :1])), dim=-1)
+    camera = (transform @ homogeneous.T).T[..., :3]
+    depth = camera[..., 2]
+    pixels = (intrinsics @ camera.T).T
+    uv = pixels[..., :2] / depth.clamp_min(1e-5).unsqueeze(-1)
+    in_frame = (uv[..., 0] >= 0) & (uv[..., 0] < width) & (uv[..., 1] >= 0) & (uv[..., 1] < height)
+    return ((depth > 1e-4) & in_frame).any()
+
+
 class CHOPRewardPreferenceDataset(Dataset):
     """Loads image/path winner-loser pairs with calibration-aware resizing.
 
@@ -107,11 +119,19 @@ class CHOPRewardPreferenceDataset(Dataset):
         intrinsics = intrinsics.clone()
         intrinsics[0] *= scale_x
         intrinsics[1] *= scale_y
+        preferred_path = self._points(row["preferred_path"])
+        rejected_path = self._points(row["rejected_path"])
         return {
             "image": image,
-            "preferred_path": self._points(row["preferred_path"]),
-            "rejected_path": self._points(row["rejected_path"]),
+            "preferred_path": preferred_path,
+            "rejected_path": rejected_path,
             "intrinsics": intrinsics,
             "t_cam_from_base": transform,
+            "preferred_has_visible_anchor": _has_visible_anchor(
+                preferred_path, intrinsics, transform, *self.image_size
+            ),
+            "rejected_has_visible_anchor": _has_visible_anchor(
+                rejected_path, intrinsics, transform, *self.image_size
+            ),
             "bag": row["bag"],
         }
