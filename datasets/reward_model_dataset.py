@@ -7,7 +7,6 @@ import math
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Sequence, Tuple
 
-import numpy as np
 import torch
 from PIL import Image
 from torch import Tensor
@@ -59,8 +58,7 @@ class CHOPRewardPreferenceDataset(Dataset):
         calibration_path: str | Path,
         split_index_path: str | Path | None = None,
         image_size: Tuple[int, int] = (384, 640),
-        image_mean: Sequence[float] = (0.485, 0.456, 0.406),
-        image_std: Sequence[float] = (0.229, 0.224, 0.225),
+        processor_name: str = "facebook/dinov3-vits16-pretrain-lvd1689m",
     ) -> None:
         self.image_root = Path(image_root)
         self.image_size = image_size  # height, width; both must be divisible by 16 for DINOv3
@@ -71,8 +69,11 @@ class CHOPRewardPreferenceDataset(Dataset):
         self.rows = [row for row in rows if allowed_bags is None or Path(row["bag"]).stem in allowed_bags]
         if not self.rows:
             raise ValueError("No reward pairs remain after applying the split")
-        self.mean = torch.tensor(image_mean, dtype=torch.float32).view(3, 1, 1)
-        self.std = torch.tensor(image_std, dtype=torch.float32).view(3, 1, 1)
+        try:
+            from transformers import AutoImageProcessor
+        except ImportError as exc:
+            raise ImportError("The reward dataset requires transformers for official DINOv3 preprocessing") from exc
+        self.image_processor = AutoImageProcessor.from_pretrained(processor_name)
         self.calibrations = {}
         for bag in {row["bag"] for row in self.rows}:
             self.calibrations[bag] = _calibration_for_bag(Path(calibration_path), bag)
@@ -84,10 +85,12 @@ class CHOPRewardPreferenceDataset(Dataset):
         with Image.open(path) as opened:
             image = opened.convert("RGB")
             original_width, original_height = image.size
-            image = image.resize((self.image_size[1], self.image_size[0]), Image.Resampling.BILINEAR)
-            array = np.asarray(image, dtype=np.float32) / 255.0
-        tensor = torch.from_numpy(array).permute(2, 0, 1)
-        return (tensor - self.mean) / self.std, (original_height, original_width)
+            tensor = self.image_processor(
+                image,
+                size={"height": self.image_size[0], "width": self.image_size[1]},
+                return_tensors="pt",
+            )["pixel_values"][0]
+        return tensor, (original_height, original_width)
 
     @staticmethod
     def _points(path: Dict[str, Any]) -> Tensor:

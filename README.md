@@ -59,8 +59,9 @@ the preferred target.
 
 `models/trajectory_reward_model.py` implements a separate, DETR-style
 candidate scorer, `r(image, path)`. Each ordered path waypoint is projected
-through the camera calibration and used as a visual anchor; learned local
-sampling offsets inspect the robot footprint around that point. Unlike a
+through the camera calibration and used as a fixed visual reference anchor;
+learned multi-head local sampling offsets inspect the relevant nearby DINO
+patches. Unlike a
 rasterized mask, the model retains waypoint order, curvature, timing, and
 metric geometry. Train it on raw preference votes with the Bradley--Terry
 helper in `training/train_reward_model.py`, then use it to rerank *feasible*
