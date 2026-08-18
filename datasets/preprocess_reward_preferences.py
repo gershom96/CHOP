@@ -33,7 +33,7 @@ def build_reward_pairs(annotations_dir: Path, images_root: Path, image_ext: str,
             for comparison in annotation.get("pairwise", []):
                 pair = [str(item) for item in comparison.get("pair", [])]
                 choice = comparison.get("choice")
-                if len(pair) != 2 or choice in TIE_OR_BAD:
+                if len(pair) != 2 or str(choice) in {str(value) for value in TIE_OR_BAD}:
                     continue
                 winner = str(choice)
                 if winner not in pair or any(candidate not in paths for candidate in pair):

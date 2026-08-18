@@ -72,8 +72,23 @@ single target:
 
 ```bash
 python datasets/preprocess_reward_preferences.py \
-  --annotations-dir data/annotations/preferences --images-root data/images \
+  --annotations-dir /media/beast-gamma/Media2/Datasets/SCAND/Preference_Annotations \
+  --images-root /media/beast-gamma/Media2/Datasets/SCAND/images \
   --output data/reward_model/raw_pairs.json --image-ext png
+```
+
+The default backbone is frozen DINOv3 ViT-S/16, with a learned reward head.
+It requires `transformers >= 4.56`, DINOv3 model-access approval, and image
+dimensions divisible by 16. Use a separate reward-model environment rather
+than upgrading the pinned OmniVLA environment in place. Once raw pairs are
+exported, train using the existing bag-disjoint CHOP split:
+
+```bash
+python -m training.train_trajectory_reward \
+  --pairs data/reward_model/raw_pairs.json \
+  --image-root /media/beast-gamma/Media2/Datasets/SCAND/images \
+  --train-index /media/beast-gamma/Media2/CHOP/lora-data/train.json \
+  --test-index /media/beast-gamma/Media2/CHOP/lora-data/test.json
 ```
 
 #

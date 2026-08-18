@@ -40,7 +40,7 @@ def bradley_terry_loss(
 
 
 class _ImageEncoder(nn.Module):
-    """Small convolutional feature pyramid used when a VLA encoder is absent."""
+    """Small convolutional encoder retained only for CPU/unit-test debugging."""
 
     def __init__(self, feature_dim: int) -> None:
         super().__init__()
@@ -53,6 +53,52 @@ class _ImageEncoder(nn.Module):
 
     def forward(self, image: Tensor) -> Tensor:
         return self.net(image)
+
+
+class _DinoV3Encoder(nn.Module):
+    """Frozen DINOv3 patch-token encoder with a spatial feature-map interface."""
+
+    def __init__(self, model_name: str) -> None:
+        super().__init__()
+        try:
+            from transformers import AutoModel, __version__ as transformers_version
+        except ImportError as exc:
+            raise ImportError(
+                "DINOv3 requires transformers>=4.56. Install it in the reward-model environment."
+            ) from exc
+        version = tuple(int(piece) for piece in transformers_version.split(".")[:2])
+        if version < (4, 56):
+            raise RuntimeError(
+                f"DINOv3 requires transformers>=4.56; found {transformers_version}. "
+                "Do not upgrade the VLA environment in place—use a separate reward-model environment."
+            )
+        self.model = AutoModel.from_pretrained(model_name)
+        self.model.requires_grad_(False)
+        self.model.eval()
+        self.patch_size = int(getattr(self.model.config, "patch_size", 16))
+        self.feature_dim = int(getattr(self.model.config, "hidden_size", getattr(self.model.config, "embed_dim", 384)))
+
+    def train(self, mode: bool = True):
+        # The reward head trains, but backbone dropout/stochastic layers must
+        # remain disabled because it is deliberately frozen.
+        super().train(mode)
+        self.model.eval()
+        return self
+
+    def forward(self, image: Tensor) -> Tensor:
+        image_height, image_width = image.shape[-2:]
+        if image_height % self.patch_size or image_width % self.patch_size:
+            raise ValueError(f"DINOv3 inputs must be divisible by patch size {self.patch_size}")
+        with torch.no_grad():
+            output = self.model(pixel_values=image, interpolate_pos_encoding=True)
+        tokens = output.last_hidden_state
+        patch_height, patch_width = image_height // self.patch_size, image_width // self.patch_size
+        patch_count = patch_height * patch_width
+        # DINOv3 prepends class/register tokens. Patch tokens occur last.
+        if tokens.shape[1] < patch_count:
+            raise RuntimeError("DINOv3 returned fewer tokens than its input patch grid")
+        tokens = tokens[:, -patch_count:]
+        return tokens.transpose(1, 2).reshape(image.shape[0], self.feature_dim, patch_height, patch_width)
 
 
 def _as_batch(matrix: Tensor, batch_size: int, rows: int, cols: int, name: str) -> Tensor:
@@ -85,6 +131,8 @@ class TrajectoryAnchorRewardModel(nn.Module):
         num_samples: int = 5,
         footprint_width: float = 0.50,
         max_offset_fraction: float = 0.12,
+        vision_backbone: str = "dinov3",
+        dinov3_model_name: str = "facebook/dinov3-vits16-pretrain-lvd1689m",
     ) -> None:
         super().__init__()
         if hidden_dim % num_heads:
@@ -94,7 +142,13 @@ class TrajectoryAnchorRewardModel(nn.Module):
         self.num_samples = num_samples
         self.footprint_width = footprint_width
         self.max_offset_fraction = max_offset_fraction
-        self.image_encoder = _ImageEncoder(feature_dim)
+        if vision_backbone == "dinov3":
+            self.image_encoder = _DinoV3Encoder(dinov3_model_name)
+            feature_dim = self.image_encoder.feature_dim
+        elif vision_backbone == "cnn":
+            self.image_encoder = _ImageEncoder(feature_dim)
+        else:
+            raise ValueError("vision_backbone must be 'dinov3' or 'cnn'")
         self.geometry_encoder = nn.Sequential(
             nn.Linear(8, hidden_dim), nn.GELU(), nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, hidden_dim),

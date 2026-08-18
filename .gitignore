@@ -6,6 +6,10 @@ datasets/__pycache__/
 sbatch-scripts/
 logs/
 chop.egg-info/
+.venv-reward/
+models/__pycache__/
+testing/__pycache__/
+training/__pycache__/
 evaluation/__pycache__/
 evaluation/utils/__pycache__/
 evaluation/metrics/__pycache__/
