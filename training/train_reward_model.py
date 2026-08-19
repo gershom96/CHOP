@@ -38,3 +38,27 @@ def reward_model_pairwise_step(
         "reward_pair_accuracy": float(accuracy.detach()),
         "reward_margin": float((preferred - rejected).detach().mean()),
     }
+
+
+def reward_model_grouped_pairwise_step(
+    model: nn.Module,
+    batch: Dict[str, Tensor],
+    temperature: float = 1.0,
+) -> Tuple[Tensor, Dict[str, float]]:
+    """Bradley--Terry step that encodes each frame once for all its pairs."""
+    pair_image_index = batch["pair_image_index"]
+    image_features = model.encode_image(batch["image"])
+    pair_image = batch["image"].index_select(0, pair_image_index)
+    shared = {
+        "intrinsics": batch["intrinsics"].index_select(0, pair_image_index),
+        "t_cam_from_base": batch["t_cam_from_base"].index_select(0, pair_image_index),
+        "encoded_image_features": image_features.index_select(0, pair_image_index),
+    }
+    preferred = model(pair_image, batch["preferred_path"], **shared)
+    rejected = model(pair_image, batch["rejected_path"], **shared)
+    loss, accuracy = bradley_terry_loss(preferred, rejected, temperature)
+    return loss, {
+        "reward_bt_loss": float(loss.detach()),
+        "reward_pair_accuracy": float(accuracy.detach()),
+        "reward_margin": float((preferred - rejected).detach().mean()),
+    }

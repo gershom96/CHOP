@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 from models.trajectory_reward_model import TrajectoryAnchorRewardModel, bradley_terry_loss
-from training.train_reward_model import reward_model_pairwise_step
+from training.train_reward_model import reward_model_grouped_pairwise_step, reward_model_pairwise_step
 
 
 def _calibration(batch_size=2):
@@ -60,6 +60,25 @@ def test_pairwise_step_reuses_one_image_encoding():
     })
     assert torch.isfinite(loss)
     assert model.image_encoder.calls == 1
+
+
+def test_grouped_pairwise_step_encodes_each_frame_once():
+    model = TrajectoryAnchorRewardModel(
+        feature_dim=24, hidden_dim=24, num_heads=4, num_layers=1, vision_backbone="cnn"
+    )
+    image = torch.randn(2, 3, 48, 64)
+    path = torch.tensor([[[1., 0.], [2., 0.], [3., .1]], [[1., 0.], [2., .1], [3., .2]]])
+    intrinsics, transform = _calibration()
+    loss, metrics = reward_model_grouped_pairwise_step(model, {
+        "image": image,
+        "preferred_path": torch.cat((path, path[:1])),
+        "rejected_path": torch.cat((path + torch.tensor([0., .1]), path[:1] + torch.tensor([0., -.1]))),
+        "intrinsics": intrinsics,
+        "t_cam_from_base": transform,
+        "pair_image_index": torch.tensor([0, 1, 0]),
+    })
+    assert torch.isfinite(loss)
+    assert 0.0 <= metrics["reward_pair_accuracy"] <= 1.0
 
 
 def test_model_keeps_an_entirely_out_of_view_path():
