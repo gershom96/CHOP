@@ -109,8 +109,11 @@ def main():
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            total_loss += loss.item() * batch["image"].shape[0]
-            seen += batch["preferred_path"].shape[0]
+            # ``loss`` is averaged over preference pairs, not source images.
+            # Cached-feature batches deliberately have ``image=None``.
+            pair_count = batch["preferred_path"].shape[0]
+            total_loss += loss.item() * pair_count
+            seen += pair_count
             global_step += 1
             if run is not None and global_step % args.wandb_log_freq == 0:
                 run.log({"train/bt_loss": loss.item(), "train/epoch": epoch}, step=global_step)
