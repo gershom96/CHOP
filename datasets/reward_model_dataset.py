@@ -14,6 +14,12 @@ from torch import Tensor
 from torch.utils.data import Dataset
 
 
+# LMDB permits one environment handle per database path in a process.  Train
+# and validation datasets share the same frozen-feature cache, so retain the
+# read-only handle here instead of attempting a second open during validation.
+_FEATURE_ENVS: dict[str, Any] = {}
+
+
 def _calibration_for_bag(calibration_path: Path, bag: str) -> Tuple[Tensor, Tensor]:
     """Return K and T_cam_from_base matching the repository visualization code."""
     data = json.loads(calibration_path.read_text())
@@ -107,7 +113,13 @@ class CHOPRewardPreferenceDataset(Dataset):
     def _cached_feature(self, image_path: str) -> Tensor:
         if self._feature_env is None:
             import lmdb
-            self._feature_env = lmdb.open(str(self.feature_cache), readonly=True, lock=False, readahead=False, subdir=True)
+            cache_path = str(self.feature_cache.resolve())
+            self._feature_env = _FEATURE_ENVS.get(cache_path)
+            if self._feature_env is None:
+                self._feature_env = lmdb.open(
+                    cache_path, readonly=True, lock=False, readahead=False, subdir=True,
+                )
+                _FEATURE_ENVS[cache_path] = self._feature_env
         with self._feature_env.begin(buffers=True) as transaction:
             value = transaction.get(image_path.encode())
         if value is None:
