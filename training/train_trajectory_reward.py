@@ -70,7 +70,10 @@ def main():
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--workers", type=int, default=2)
+    # The grouped raw-preference index is large.  Forked workers duplicate enough
+    # Python metadata to trigger paging, which is much slower than synchronous
+    # cached-feature reads.
+    parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--limit-train", type=int, default=None)
     parser.add_argument("--limit-test", type=int, default=None,
                         help="Cap held-out pairs; useful only for a fast pipeline smoke test.")
