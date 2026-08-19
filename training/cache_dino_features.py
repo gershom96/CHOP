@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import lmdb
@@ -34,17 +35,23 @@ def main():
     written = 0
     with torch.inference_mode():
         for batch in loader:
+            with env.begin() as transaction:
+                missing = [index for index, path in enumerate(batch["image_paths"]) if transaction.get(path.encode()) is None]
+            if not missing:
+                continue
+            indices = torch.tensor(missing, dtype=torch.long)
             with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=device.type == "cuda"):
-                features = model.encode_image(batch["image"].to(device, non_blocking=True)).half().cpu().contiguous()
+                images = batch["image"].index_select(0, indices).to(device, non_blocking=True)
+                features = model.encode_image(images).half().cpu().contiguous()
             with env.begin(write=True) as transaction:
-                for path, feature in zip(batch["image_paths"], features):
-                    if transaction.get(path.encode()) is None:
-                        transaction.put(path.encode(), feature.numpy().tobytes())
-                        written += 1
+                for index, feature in zip(missing, features):
+                    transaction.put(batch["image_paths"][index].encode(), feature.numpy().tobytes())
+                    written += 1
             if written and written % 1024 == 0:
                 print(f"cached={written}", flush=True)
     env.sync()
     env.close()
+    (args.output / "complete.json").write_text(json.dumps({"written_this_run": written}) + "\n")
     print(f"cached={written} feature maps at {args.output}")
 
 
