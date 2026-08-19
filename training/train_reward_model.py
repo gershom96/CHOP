@@ -58,7 +58,11 @@ def reward_model_grouped_pairwise_step(
     }
     preferred = model(pair_image, batch["preferred_path"], **shared)
     rejected = model(pair_image, batch["rejected_path"], **shared)
+    if not torch.isfinite(preferred).all() or not torch.isfinite(rejected).all():
+        raise FloatingPointError("Non-finite reward score; aborting before corrupting Bradley--Terry metrics")
     loss, accuracy = bradley_terry_loss(preferred, rejected, temperature)
+    if not torch.isfinite(loss):
+        raise FloatingPointError("Non-finite Bradley--Terry loss")
     return loss, {
         "reward_bt_loss": float(loss.detach()),
         "reward_pair_accuracy": float(accuracy.detach()),

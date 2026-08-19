@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -17,6 +18,7 @@ from training.train_reward_model import reward_model_grouped_pairwise_step
 
 
 def _evaluate(model, loader, device, amp_enabled):
+    started = time.perf_counter()
     model.eval()
     values = {"loss": 0.0, "accuracy": 0.0, "count": 0}
     with torch.no_grad():
@@ -28,7 +30,11 @@ def _evaluate(model, loader, device, amp_enabled):
             values["loss"] += loss.item() * n
             values["accuracy"] += metrics["reward_pair_accuracy"] * n
             values["count"] += n
-    return {key: values[key] / values["count"] for key in ("loss", "accuracy")}
+    return {
+        "loss": values["loss"] / values["count"],
+        "accuracy": values["accuracy"] / values["count"],
+        "seconds": time.perf_counter() - started,
+    }
 
 
 def _init_wandb(args: argparse.Namespace, device: torch.device) -> Optional[Any]:
@@ -92,6 +98,7 @@ def main():
     best_accuracy = float("-inf")
     global_step = 0
     for epoch in range(1, args.epochs + 1):
+        epoch_started = time.perf_counter()
         model.train()
         total_loss, seen = 0.0, 0
         for batch in train_loader:
@@ -109,12 +116,16 @@ def main():
                 run.log({"train/bt_loss": loss.item(), "train/epoch": epoch}, step=global_step)
         metrics = _evaluate(model, test_loader, device, amp_enabled)
         train_loss = total_loss / seen
-        print(f"epoch={epoch} train_bt_loss={train_loss:.4f} test_bt_loss={metrics['loss']:.4f} test_pair_accuracy={metrics['accuracy']:.4f}")
+        train_seconds = time.perf_counter() - epoch_started - metrics["seconds"]
+        print(f"epoch={epoch} train_bt_loss={train_loss:.4f} test_bt_loss={metrics['loss']:.4f} test_pair_accuracy={metrics['accuracy']:.4f} train_pairs_per_second={seen / train_seconds:.1f} train_seconds={train_seconds:.1f} eval_seconds={metrics['seconds']:.1f}")
         if run is not None:
             run.log({
                 "train/epoch_bt_loss": train_loss,
                 "eval/bt_loss": metrics["loss"],
                 "eval/pair_accuracy": metrics["accuracy"],
+                "system/train_pairs_per_second": seen / train_seconds,
+                "system/train_seconds": train_seconds,
+                "system/eval_seconds": metrics["seconds"],
                 "epoch": epoch,
             }, step=global_step)
         if metrics["accuracy"] > best_accuracy:
