@@ -31,8 +31,9 @@ def bradley_terry_loss(
     """Negative Bradley--Terry log-likelihood and pairwise accuracy."""
     if temperature <= 0:
         raise ValueError("temperature must be positive")
-    preferred_scores = preferred_scores.reshape(-1)
-    rejected_scores = rejected_scores.reshape(-1)
+    # Keep the likelihood in FP32 even when the vision/reward forward uses AMP.
+    preferred_scores = preferred_scores.float().reshape(-1)
+    rejected_scores = rejected_scores.float().reshape(-1)
     if preferred_scores.shape != rejected_scores.shape:
         raise ValueError("preferred_scores and rejected_scores must have equal shape")
     logits = (preferred_scores - rejected_scores) / temperature
@@ -260,12 +261,13 @@ class TrajectoryAnchorRewardModel(nn.Module):
 
     def forward(
         self,
-        image: Tensor,
+        image: Optional[Tensor],
         path_points: Tensor,
         intrinsics: Tensor,
         t_cam_from_base: Tensor,
         waypoint_valid: Optional[Tensor] = None,
         encoded_image_features: Optional[Tensor] = None,
+        image_size: Optional[Tuple[int, int]] = None,
         return_details: bool = False,
     ) -> Tensor | Tuple[Tensor, dict[str, Tensor]]:
         """Return one scalar preference score per candidate trajectory.
@@ -273,12 +275,20 @@ class TrajectoryAnchorRewardModel(nn.Module):
         ``image`` is Bx3xHxW, and point units must match calibration units
         (meters for CHOP).  Higher scores mean more preferred.
         """
-        if image.ndim != 4 or image.shape[1] != 3:
-            raise ValueError("image must have shape (B, 3, H, W)")
-        if image.shape[0] != path_points.shape[0]:
-            raise ValueError("image and path_points batch dimensions must match")
-        if encoded_image_features is not None and encoded_image_features.shape[0] != image.shape[0]:
-            raise ValueError("encoded_image_features batch dimension must match image")
+        if image is None and encoded_image_features is None:
+            raise ValueError("provide image or encoded_image_features")
+        if image is not None:
+            if image.ndim != 4 or image.shape[1] != 3:
+                raise ValueError("image must have shape (B, 3, H, W)")
+            if image.shape[0] != path_points.shape[0]:
+                raise ValueError("image and path_points batch dimensions must match")
+            height, width = image.shape[-2:]
+        else:
+            if image_size is None:
+                raise ValueError("image_size is required when using cached image features")
+            height, width = image_size
+        if encoded_image_features is not None and encoded_image_features.shape[0] != path_points.shape[0]:
+            raise ValueError("encoded_image_features batch dimension must match path_points")
         features, _ = self._trajectory_features(path_points)
         geometry_query = self.geometry_encoder(features)
         xyz = path_points if path_points.shape[-1] == 3 else torch.cat((path_points, torch.zeros_like(path_points[..., :1])), dim=-1)
@@ -287,7 +297,7 @@ class TrajectoryAnchorRewardModel(nn.Module):
         # Path points supply fixed, calibrated Deformable-DETR reference
         # anchors; they are not learned image-space boxes or masks.
         uv, visible = self._project(xyz, intrinsics, t_cam_from_base)
-        anchor_grid = self._to_grid(uv, image.shape[-2], image.shape[-1])
+        anchor_grid = self._to_grid(uv, height, width)
         visual_anchor_in_image = visible & (anchor_grid.abs() <= 1).all(dim=-1)
         sequence_valid = torch.ones_like(visual_anchor_in_image)
         feature_map = self.encode_image(image) if encoded_image_features is None else encoded_image_features

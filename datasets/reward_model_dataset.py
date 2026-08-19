@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import torch
+import numpy as np
 from PIL import Image
 from torch import Tensor
 from torch.utils.data import Dataset
@@ -59,8 +60,11 @@ class CHOPRewardPreferenceDataset(Dataset):
         split_index_path: str | Path | None = None,
         image_size: Tuple[int, int] = (384, 640),
         processor_name: str = "facebook/dinov3-vits16-pretrain-lvd1689m",
+        feature_cache: str | Path | None = None,
     ) -> None:
         self.image_root = Path(image_root)
+        self.feature_cache = Path(feature_cache) if feature_cache else None
+        self._feature_env = None
         self.image_size = image_size  # height, width; both must be divisible by 16 for DINOv3
         if image_size[0] % 16 or image_size[1] % 16:
             raise ValueError("image_size must be divisible by 16 for DINOv3")
@@ -100,6 +104,18 @@ class CHOPRewardPreferenceDataset(Dataset):
             )["pixel_values"][0]
         return tensor, (original_height, original_width)
 
+    def _cached_feature(self, image_path: str) -> Tensor:
+        if self._feature_env is None:
+            import lmdb
+            self._feature_env = lmdb.open(str(self.feature_cache), readonly=True, lock=False, readahead=False, subdir=True)
+        with self._feature_env.begin(buffers=True) as transaction:
+            value = transaction.get(image_path.encode())
+        if value is None:
+            raise KeyError(f"Missing cached DINO feature for {image_path}")
+        feature_height, feature_width = self.image_size[0] // 16, self.image_size[1] // 16
+        array = np.frombuffer(value, dtype=np.float16).reshape(384, feature_height, feature_width).copy()
+        return torch.from_numpy(array)
+
     @staticmethod
     def _points(path: Dict[str, Any]) -> Tensor:
         points = torch.as_tensor(path["points"], dtype=torch.float32)
@@ -109,7 +125,13 @@ class CHOPRewardPreferenceDataset(Dataset):
 
     def __getitem__(self, index: int) -> Dict[str, Tensor | str]:
         group = self.groups[index]
-        image, (original_height, original_width) = self._image(self.image_root / group["image_path"])
+        if self.feature_cache:
+            image = None
+            original_height, original_width = 720, 1280
+            feature_map = self._cached_feature(group["image_path"])
+        else:
+            image, (original_height, original_width) = self._image(self.image_root / group["image_path"])
+            feature_map = None
         intrinsics, transform = self.calibrations[group["bag"]]
         # Projection occurs in resized image coordinates, so K must be scaled
         # from the raw SCAND image resolution accordingly.
@@ -127,12 +149,15 @@ class CHOPRewardPreferenceDataset(Dataset):
             "intrinsics": intrinsics,
             "t_cam_from_base": transform,
             "bag": group["bag"],
+            "image_path": group["image_path"],
+            "feature_map": feature_map,
         }
 
 
 def reward_pair_group_collate(samples):
     """Flatten comparison paths while retaining one image per unique frame."""
-    images = torch.stack([sample["image"] for sample in samples])
+    feature_cache = samples[0]["feature_map"] is not None
+    images = None if feature_cache else torch.stack([sample["image"] for sample in samples])
     intrinsics = torch.stack([sample["intrinsics"] for sample in samples])
     transforms = torch.stack([sample["t_cam_from_base"] for sample in samples])
     pair_image_index = torch.cat([
@@ -146,4 +171,7 @@ def reward_pair_group_collate(samples):
         "preferred_path": torch.cat([sample["preferred_path"] for sample in samples]),
         "rejected_path": torch.cat([sample["rejected_path"] for sample in samples]),
         "pair_image_index": pair_image_index,
+        "feature_map": torch.stack([sample["feature_map"] for sample in samples]) if feature_cache else None,
+        "image_size": samples[0]["image"].shape[-2:] if not feature_cache else (384, 640),
+        "image_paths": [sample["image_path"] for sample in samples],
     }

@@ -22,7 +22,7 @@ def _evaluate(model, loader, device, amp_enabled):
     with torch.no_grad():
         for batch in loader:
             batch = {key: value.to(device, non_blocking=True) if isinstance(value, torch.Tensor) else value for key, value in batch.items()}
-            with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp_enabled):
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp_enabled):
                 loss, metrics = reward_model_grouped_pairwise_step(model, batch)
             n = batch["preferred_path"].shape[0]
             values["loss"] += loss.item() * n
@@ -58,6 +58,8 @@ def main():
     parser.add_argument("--train-index", type=Path, required=True)
     parser.add_argument("--test-index", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=Path("weights/chop_reward_dinov3"))
+    parser.add_argument("--feature-cache", type=Path, default=None,
+                        help="LMDB of frozen DINOv3 maps created by cache_dino_features.py")
     parser.add_argument("--model", default="facebook/dinov3-vits16-pretrain-lvd1689m")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=10)
@@ -76,8 +78,8 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     amp_enabled = device.type == "cuda" and not args.no_amp
     run = _init_wandb(args, device)
-    train_data = CHOPRewardPreferenceDataset(args.pairs, args.image_root, args.calibration, args.train_index)
-    test_data = CHOPRewardPreferenceDataset(args.pairs, args.image_root, args.calibration, args.test_index)
+    train_data = CHOPRewardPreferenceDataset(args.pairs, args.image_root, args.calibration, args.train_index, feature_cache=args.feature_cache)
+    test_data = CHOPRewardPreferenceDataset(args.pairs, args.image_root, args.calibration, args.test_index, feature_cache=args.feature_cache)
     if args.limit_train:
         train_data.groups = train_data.groups[:args.limit_train]
     if args.limit_test:
@@ -86,7 +88,6 @@ def main():
     test_loader = DataLoader(test_data, args.batch_size, shuffle=False, num_workers=args.workers, pin_memory=True, persistent_workers=args.workers > 0, collate_fn=reward_pair_group_collate)
     model = TrajectoryAnchorRewardModel(vision_backbone="dinov3", dinov3_model_name=args.model).to(device)
     optimizer = AdamW((parameter for parameter in model.parameters() if parameter.requires_grad), lr=args.lr, weight_decay=1e-4)
-    scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
     args.output.mkdir(parents=True, exist_ok=True)
     best_accuracy = float("-inf")
     global_step = 0
@@ -96,13 +97,11 @@ def main():
         for batch in train_loader:
             batch = {key: value.to(device, non_blocking=True) if isinstance(value, torch.Tensor) else value for key, value in batch.items()}
             optimizer.zero_grad(set_to_none=True)
-            with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp_enabled):
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp_enabled):
                 loss, _ = reward_model_grouped_pairwise_step(model, batch)
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
+            loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scaler.step(optimizer)
-            scaler.update()
+            optimizer.step()
             total_loss += loss.item() * batch["image"].shape[0]
             seen += batch["preferred_path"].shape[0]
             global_step += 1
