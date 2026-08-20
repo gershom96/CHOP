@@ -44,6 +44,7 @@ def reward_model_grouped_pairwise_step(
     model: nn.Module,
     batch: Dict[str, Tensor],
     temperature: float = 1.0,
+    score_regularization: float = 0.0,
 ) -> Tuple[Tensor, Dict[str, float]]:
     """Bradley--Terry step that encodes each frame once for all its pairs."""
     pair_image_index = batch["pair_image_index"]
@@ -60,11 +61,15 @@ def reward_model_grouped_pairwise_step(
     rejected = model(pair_image, batch["rejected_path"], **shared)
     if not torch.isfinite(preferred).all() or not torch.isfinite(rejected).all():
         raise FloatingPointError("Non-finite reward score; aborting before corrupting Bradley--Terry metrics")
-    loss, accuracy = bradley_terry_loss(preferred, rejected, temperature)
+    bt_loss, accuracy = bradley_terry_loss(preferred, rejected, temperature)
+    score_penalty = 0.5 * (preferred.float().square().mean() + rejected.float().square().mean())
+    loss = bt_loss + score_regularization * score_penalty
     if not torch.isfinite(loss):
         raise FloatingPointError("Non-finite Bradley--Terry loss")
     return loss, {
-        "reward_bt_loss": float(loss.detach()),
+        "reward_bt_loss": float(bt_loss.detach()),
+        "reward_total_loss": float(loss.detach()),
+        "reward_score_penalty": float(score_penalty.detach()),
         "reward_pair_accuracy": float(accuracy.detach()),
         "reward_margin": float((preferred - rejected).detach().mean()),
     }
