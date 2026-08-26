@@ -85,6 +85,7 @@ def main():
     parser.add_argument("--hidden-dim", type=int, default=192)
     parser.add_argument("--num-heads", type=int, default=6)
     parser.add_argument("--num-layers", type=int, default=2)
+    parser.add_argument("--attention-mode", choices=("deformable", "global"), default="deformable")
     # The grouped raw-preference index is large.  Forked workers duplicate enough
     # Python metadata to trigger paging, which is much slower than synchronous
     # cached-feature reads.
@@ -113,6 +114,7 @@ def main():
     model = TrajectoryAnchorRewardModel(
         vision_backbone="dinov3", dinov3_model_name=args.model,
         hidden_dim=args.hidden_dim, num_heads=args.num_heads, num_layers=args.num_layers,
+        attention_mode=args.attention_mode,
     ).to(device)
     optimizer = AdamW((parameter for parameter in model.parameters() if parameter.requires_grad),
                       lr=args.lr, weight_decay=args.weight_decay)

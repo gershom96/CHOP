@@ -38,6 +38,7 @@ def main() -> None:
     model = TrajectoryAnchorRewardModel(
         vision_backbone="dinov3", dinov3_model_name=config["model"],
         hidden_dim=config["hidden_dim"], num_heads=config["num_heads"], num_layers=config["num_layers"],
+        attention_mode=config.get("attention_mode", "deformable"),
     ).to(device)
     model.load_state_dict(checkpoint["model"])
     metrics = _evaluate(model, loader, device, amp_enabled=device.type == "cuda")

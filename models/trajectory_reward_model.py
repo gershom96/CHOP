@@ -16,6 +16,7 @@ not a policy and should not be used to produce actions directly.
 
 from __future__ import annotations
 
+import math
 from typing import Optional, Tuple
 
 import torch
@@ -134,6 +135,7 @@ class TrajectoryAnchorRewardModel(nn.Module):
         max_waypoints: int = 32,
         vision_backbone: str = "dinov3",
         dinov3_model_name: str = "facebook/dinov3-vits16-pretrain-lvd1689m",
+        attention_mode: str = "deformable",
     ) -> None:
         super().__init__()
         if hidden_dim % num_heads:
@@ -146,6 +148,9 @@ class TrajectoryAnchorRewardModel(nn.Module):
         self.cross_attention_heads = num_heads
         self.max_offset_fraction = max_offset_fraction
         self.max_waypoints = max_waypoints
+        if attention_mode not in {"deformable", "global"}:
+            raise ValueError("attention_mode must be 'deformable' or 'global'")
+        self.attention_mode = attention_mode
         if vision_backbone == "dinov3":
             self.image_encoder = _DinoV3Encoder(dinov3_model_name)
             feature_dim = self.image_encoder.feature_dim
@@ -160,12 +165,18 @@ class TrajectoryAnchorRewardModel(nn.Module):
         self.waypoint_query_embedding = nn.Embedding(max_waypoints, hidden_dim)
         if feature_dim % self.cross_attention_heads:
             raise ValueError("feature_dim must be divisible by num_heads for deformable attention")
-        self.visual_projection = nn.Linear(feature_dim, hidden_dim)
-        # True multi-head deformable cross-attention: every anchor-query head
-        # owns both a feature subspace and M learned reference-relative samples.
-        self.value_projection = nn.Conv2d(feature_dim, feature_dim, kernel_size=1)
-        self.offset_head = nn.Linear(hidden_dim, num_heads * num_samples * 2)
-        self.weight_head = nn.Linear(hidden_dim, num_heads * num_samples)
+        if attention_mode == "deformable":
+            self.visual_projection = nn.Linear(feature_dim, hidden_dim)
+            # True multi-head deformable cross-attention: every anchor-query head
+            # owns both a feature subspace and M learned reference-relative samples.
+            self.value_projection = nn.Conv2d(feature_dim, feature_dim, kernel_size=1)
+            self.offset_head = nn.Linear(hidden_dim, num_heads * num_samples * 2)
+            self.weight_head = nn.Linear(hidden_dim, num_heads * num_samples)
+        else:
+            # Control ablation: path tokens attend globally to every DINO patch,
+            # with no calibrated image-space anchor or learned local offsets.
+            self.global_key_projection = nn.Linear(feature_dim, hidden_dim)
+            self.global_value_projection = nn.Linear(feature_dim, hidden_dim)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim, nhead=num_heads, dim_feedforward=hidden_dim * 4,
             dropout=0.1, activation="gelu", batch_first=True, norm_first=True,
@@ -253,6 +264,24 @@ class TrajectoryAnchorRewardModel(nn.Module):
         visual = (sampled * weights.unsqueeze(-1)).sum(dim=3).reshape(batch_size, steps, channels)
         return visual, weights
 
+    def _global_visual_attention(self, feature_map: Tensor, query: Tensor) -> Tuple[Tensor, Tensor]:
+        """Standard multi-head cross attention over all DINO patches.
+
+        This deliberately omits the projected physical anchors and serves as a
+        capacity-matched control for the deformable-anchor mechanism.
+        """
+        batch_size, channels, height, width = feature_map.shape
+        steps, heads = query.shape[1], self.cross_attention_heads
+        head_dim = query.shape[-1] // heads
+        patches = feature_map.flatten(2).transpose(1, 2)
+        keys = self.global_key_projection(patches).view(batch_size, height * width, heads, head_dim)
+        values = self.global_value_projection(patches).view(batch_size, height * width, heads, head_dim)
+        queries = query.view(batch_size, steps, heads, head_dim)
+        logits = torch.einsum("bkhd,bnhd->bkhn", queries, keys) / math.sqrt(head_dim)
+        weights = logits.softmax(dim=-1)
+        visual = torch.einsum("bkhn,bnhd->bkhd", weights, values).reshape(batch_size, steps, -1)
+        return visual, weights
+
     def encode_image(self, image: Tensor) -> Tensor:
         """Encode an image once for one or more candidate-path scores."""
         if image.ndim != 4 or image.shape[1] != 3:
@@ -294,12 +323,7 @@ class TrajectoryAnchorRewardModel(nn.Module):
         xyz = path_points if path_points.shape[-1] == 3 else torch.cat((path_points, torch.zeros_like(path_points[..., :1])), dim=-1)
         if xyz.shape[1] > self.max_waypoints:
             raise ValueError(f"at most {self.max_waypoints} waypoints are supported")
-        # Path points supply fixed, calibrated Deformable-DETR reference
-        # anchors; they are not learned image-space boxes or masks.
-        uv, visible = self._project(xyz, intrinsics, t_cam_from_base)
-        anchor_grid = self._to_grid(uv, height, width)
-        visual_anchor_in_image = visible & (anchor_grid.abs() <= 1).all(dim=-1)
-        sequence_valid = torch.ones_like(visual_anchor_in_image)
+        sequence_valid = torch.ones(xyz.shape[:2], dtype=torch.bool, device=xyz.device)
         feature_map = self.encode_image(image) if encoded_image_features is None else encoded_image_features
         if waypoint_valid is not None:
             if waypoint_valid.shape != sequence_valid.shape:
@@ -307,11 +331,21 @@ class TrajectoryAnchorRewardModel(nn.Module):
             sequence_valid = waypoint_valid.bool()
         waypoint_ids = torch.arange(xyz.shape[1], device=xyz.device)
         query = geometry_query + self.waypoint_query_embedding(waypoint_ids).unsqueeze(0)
-        # Out-of-frame points remain part of the trajectory. grid_sample gives
-        # zero local visual evidence there, while learned offsets can still
-        # reach nearby in-frame context.
-        local_visual, sampling_weights = self._sample_visual_features(feature_map, query, anchor_grid, sequence_valid)
-        tokens = query + self.visual_projection(local_visual)
+        if self.attention_mode == "deformable":
+            # Path points supply fixed, calibrated Deformable-DETR reference
+            # anchors; they are not learned image-space boxes or masks.
+            uv, visible = self._project(xyz, intrinsics, t_cam_from_base)
+            anchor_grid = self._to_grid(uv, height, width)
+            visual_anchor_in_image = visible & (anchor_grid.abs() <= 1).all(dim=-1)
+            # Out-of-frame points remain part of the trajectory. grid_sample gives
+            # zero local visual evidence there, while learned offsets can still
+            # reach nearby in-frame context.
+            local_visual, sampling_weights = self._sample_visual_features(feature_map, query, anchor_grid, sequence_valid)
+            tokens = query + self.visual_projection(local_visual)
+        else:
+            tokens, sampling_weights = self._global_visual_attention(feature_map, query)
+            anchor_grid = None
+            visual_anchor_in_image = None
         tokens = self.trajectory_encoder(tokens, src_key_padding_mask=~sequence_valid)
         pooled = (tokens * sequence_valid.unsqueeze(-1)).sum(dim=1) / sequence_valid.sum(dim=1, keepdim=True).clamp_min(1)
         score = self.reward_head(pooled).squeeze(-1)
