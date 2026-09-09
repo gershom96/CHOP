@@ -378,8 +378,10 @@ class OmniVLAChopDataset(torch.utils.data.Dataset):
             )
         ).float()
 
-        current_action = actions[0]
-        future_actions = actions[1:]
+        # Reward-only training must not expose human target actions as inputs.
+        token_actions = torch.zeros_like(actions) if getattr(self, 'reward_only', False) else actions
+        current_action = token_actions[0]
+        future_actions = token_actions[1:]
         future_actions_string = ''.join(self.action_tokenizer(future_actions))
         current_action_string = self.action_tokenizer(current_action)
         action_chunk_string = current_action_string + future_actions_string
@@ -442,6 +444,8 @@ class OmniVLAChopDataset(torch.utils.data.Dataset):
         action_select_mask = torch.tensor(1.0)           
 
         return dict(
+            reward_image_path=sample['image_path'],
+            reward_bag=sample['bag'],
             pixel_values=pixel_values, 
             pixel_values_goal=pixel_values_g, 
             input_ids=input_ids, 

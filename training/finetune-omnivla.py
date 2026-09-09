@@ -134,6 +134,15 @@ class OmniVLAConfig:
     image_aug: bool = True                           # If True, trains with image augmentations (HIGHLY RECOMMENDED)
     preference_ranking_weight: float = 0.0           # Set >0 for direct Bradley--Terry trajectory ranking
     preference_temperature: float = 1.0              # Temperature for the pairwise ranking objective
+    reward_checkpoint: str = ""                    # Enables reward-only training; no SFT losses
+    reward_feature_cache: str = ""
+    reward_calibration: str = "evaluation/scand_cameras.json"
+    reward_reference_weight: float = 10.0
+    reward_action_scale: float = 0.38
+    reward_public_head_step: int = 210000
+    reward_train_split: str = ""
+    reward_val_split: str = ""
+    dataset_config: str = "./configs/chop_omnivla.yaml"
 
     # LoRA
     use_lora: bool = True                            # If True, uses LoRA fine-tuning
@@ -210,7 +219,10 @@ def init_module(
     module = module_class(**module_args)
     count_parameters(module, module_name)
 
-    if cfg.resume:
+    if cfg.reward_checkpoint:
+        state_dict = load_checkpoint(module_name, cfg.vla_path, cfg.reward_public_head_step)
+        module.load_state_dict(state_dict)
+    elif cfg.resume:
         state_dict = load_checkpoint(module_name, cfg.vla_path, cfg.resume_step)
         module.load_state_dict(state_dict)
         
@@ -288,6 +300,7 @@ def run_forward_pass(
     preference_ranking_weight=0.0,
     preference_temperature=1.0,
     idrun=0,
+    return_actions=False,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
     Compute model forward pass and metrics for both training and validation.
@@ -382,6 +395,8 @@ def run_forward_pass(
         # mask_act = batch["action_select_mask"].to(torch.bfloat16).to(device_id).unsqueeze(1).unsqueeze(2).repeat(1,8,4)
         # mask_notact = -1.0*(mask_act - 1.0)           
         # action_ref = mask_act*ground_truth_actions + mask_notact*action_mbra.detach().to(torch.bfloat16)
+        if return_actions:
+            return predicted_actions
         action_ref = ground_truth_actions
         neg_action_ref = neg_actions.to(device_id).to(torch.bfloat16)
 
@@ -752,7 +767,7 @@ def train_omnivla(cfg: OmniVLAConfig) -> None:
     torch.cuda.empty_cache()
     print("World size", world_size, "rank", device_id)
 
-    with open("./configs/chop_omnivla.yaml", "r") as f:
+    with open(cfg.dataset_config, "r") as f:
         config = yaml.safe_load(f)
     # Initialize wandb logging
     if distributed_state.is_main_process:
@@ -875,6 +890,11 @@ def train_omnivla(cfg: OmniVLAConfig) -> None:
     )
 
     # Get number of vision patches
+    reward_step = None
+    if cfg.reward_checkpoint:
+        from training.omnivla_policy_reward import OmniRewardStep
+        reward_step = OmniRewardStep(cfg, vla, action_head, pose_projector, device_id)
+
     NUM_PATCHES = vla.module.vision_backbone.get_num_patches() * vla.module.vision_backbone.get_num_images_in_input()
     # For goal pose conditioning
     NUM_PATCHES += 1
@@ -910,6 +930,9 @@ def train_omnivla(cfg: OmniVLAConfig) -> None:
     collator = PaddedCollatorForActionPrediction_CHOP(
         tokenizer_max_length, processor.tokenizer.pad_token_id, padding_side="right", num_img = cfg.num_images_in_input
     )
+    if reward_step is not None:
+        from training.omnivla_policy_reward import RewardCollator
+        collator = RewardCollator(collator)
 
     #Data loader and sampler setting (I provide the sample dataloader. Please replace this dataloader with your dataset. Following sample code, you can combine the mutiple datasets.)        
     train_dataset = []
@@ -935,8 +958,29 @@ def train_omnivla(cfg: OmniVLAConfig) -> None:
             learn_angle=config["learn_angle"],
             normalize=config["normalize"],
             modality_choices=(4, 5, 6),
-            create_image_cache=True if data_split_type == "train" else False
+            create_image_cache=(data_split_type == 'train' and reward_step is None)
         )
+
+        if reward_step is not None:
+            split = cfg.reward_train_split if data_split_type == 'train' else cfg.reward_val_split
+            if not split:
+                raise ValueError('Reward mode requires explicit bag-disjoint train/validation split files')
+            allowed = {Path(r['bag']).stem for r in json.loads(Path(split).read_text())}
+            dataset_chop.trajectory_cache = [s for s in dataset_chop.trajectory_cache if Path(s['bag']).stem in allowed]
+            import lmdb
+            from datasets.reward_model_dataset import _FEATURE_ENVS
+            key = str(reward_step.cache.feature_cache.resolve())
+            if key not in _FEATURE_ENVS:
+                _FEATURE_ENVS[key] = lmdb.open(key, readonly=True, lock=False, readahead=False)
+            reward_step.cache._feature_env = _FEATURE_ENVS[key]
+            with _FEATURE_ENVS[key].begin() as txn:
+                cursor = txn.cursor()
+                dataset_chop.trajectory_cache = [s for s in dataset_chop.trajectory_cache if cursor.set_key(s['image_path'].encode())]
+            if not dataset_chop.trajectory_cache:
+                raise ValueError('Reward split has no cached observations; check the observation index and split')
+            dataset_chop.reward_only = True
+            if not config['normalize'] or data_config_sub['waypoint_spacing'] * .38 != cfg.reward_action_scale:
+                raise ValueError('Reward action scale must match OmniVLA dataset normalization')
 
         if data_split_type == "train":
             train_dataset.append(dataset_chop)
@@ -997,7 +1041,7 @@ def train_omnivla(cfg: OmniVLAConfig) -> None:
     samplers = [sampler_train]
                  
     log_count = 0
-    for epoch in range(100):
+    for epoch in range(1 if reward_step is not None else 100):
         # Reset sampler epochs and fresh iterators at the start of every epoch
         for sampler in samplers:
             sampler.set_epoch(epoch)
@@ -1032,7 +1076,8 @@ def train_omnivla(cfg: OmniVLAConfig) -> None:
                 merged_batch = merge_batches_padding(batches, processor.tokenizer.pad_token_id, IGNORE_INDEX, tokenizer_max_length)                  
 
                 # Compute training metrics and loss
-                loss, metrics = run_forward_pass(
+                forward_fn = run_forward_pass if reward_step is None else lambda **kw: reward_step(run_forward_pass, **kw)
+                loss, metrics = forward_fn(
                     vla=vla,
                     action_head=action_head,
                     pose_projector=pose_projector,
@@ -1053,6 +1098,8 @@ def train_omnivla(cfg: OmniVLAConfig) -> None:
 
                 # Store recent train metrics
                 for metric_name, value in metrics.items():
+                    if reward_step is not None and metric_name not in recent_metrics:
+                        recent_metrics[metric_name] = deque(maxlen=cfg.grad_accumulation_steps)
                     if metric_name in recent_metrics:
                         recent_metrics[metric_name].append(value)
 
@@ -1086,6 +1133,8 @@ def train_omnivla(cfg: OmniVLAConfig) -> None:
 
                 # Optimizer and LR scheduler step
                 if (batch_idx + 1) % cfg.grad_accumulation_steps == 0:
+                    if reward_step is not None:
+                        torch.nn.utils.clip_grad_norm_(trainable_params, 1., error_if_nonfinite=True)
                     optimizer.step()
                     scheduler.step()
                     optimizer.zero_grad()

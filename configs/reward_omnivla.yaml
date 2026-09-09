@@ -1,0 +1,12 @@
+# Both observation pools are split by the explicit reward train/validation bag files.
+image_size: [224, 224]
+context_type: temporal
+normalize: true
+learn_angle: true
+num_workers: 0
+datasets_scand_a:
+  data_root: /media/beast-gamma/Media2/CHOP/lora-data
+  train: /media/beast-gamma/Media2/CHOP/lora-data/train.json
+  test: /media/beast-gamma/Media2/CHOP/lora-data/train.json
+  image_root: /media/beast-gamma/Media2/Datasets/SCAND/images
+  waypoint_spacing: 1
