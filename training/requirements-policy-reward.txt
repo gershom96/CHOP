@@ -1,0 +1,9 @@
+# Install a cluster-compatible torch + torchvision pair separately.
+# Do not install the root OmniVLA pyproject into this environment.
+transformers>=4.56,<6
+numpy
+pillow
+lmdb
+efficientnet-pytorch==0.7.1
+warmup-scheduler==0.3
+wandb

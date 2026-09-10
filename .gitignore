@@ -3,7 +3,12 @@ wandb/
 weights/
 runs/
 datasets/__pycache__/
-sbatch-scripts/
+sbatch-scripts/*
+!sbatch-scripts/finetune-gnm-reward.slurm
+!sbatch-scripts/finetune-vint-reward.slurm
+!sbatch-scripts/run_policy_reward.sh
+!sbatch-scripts/README.md
+!sbatch-scripts/NEXUS_AUDIT.md
 logs/
 chop.egg-info/
 .venv-reward/
