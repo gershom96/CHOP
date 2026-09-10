@@ -28,9 +28,43 @@ Inspected over the user's authenticated SSH connection to `nexusgamma`:
 
 The local reward launchers, shared script, and docs were consolidated directly
 into `sbatch-scripts/`, replacing the aliases and removing the local `slurm/`
-directory. Git ignore exceptions cover these five reward files only. Deployment
-of this cleanup to Nexus is pending: the previously authenticated SSH connection
-was unavailable when attempted. The cluster still has the earlier alias layout.
+directory. Git ignore exceptions cover these five reward files only. The cleanup
+was subsequently pulled on Nexus. Earlier uncommitted deployment files are
+preserved in stash `before-reward-branch-sync-20260910`; the cluster's NoMaD
+configuration commit was merged without conflicts. Its submodule is unchanged.
+
+## Dataset reconciliation and environment setup
+
+- Local and cluster `data/lora-data/train.json` SHA256:
+  `fab73a9faee0f4f4cd18f7bb863d1f959fc6c4bc5eb80029cb2f6c9351621a5a`.
+- Local and cluster `test.json` SHA256:
+  `35968fc15c5610e3e5d92326f7a43e0f31ce13f9afd1589f14968386a14f4781`.
+- Development index: 99 bags, 101,514 distinct image paths; every referenced
+  image file exists on Nexus. Of these, 98,474 observations have the required
+  six-frame context and future goal. Reward splits partition the 99 bags into
+  79 training and 20 validation bags with no overlap or missing bags.
+- Held-out test index: 24 bags, 28,602 distinct image paths, no overlap with
+  development bags. All split JSON hashes also match across machines.
+- Both image roots contain the same 124 bag directory names. The sole directory
+  outside the CHOP indices is `A_Spot_Union_Union_Wed_Nov_10_67`, present on both
+  machines. Additional raw files are not automatically additional labeled data;
+  the original split is retained. This audit verifies indexed training-file
+  existence and index identity, not byte equality of all raw images.
+- Reproduce bag/frame/split coverage with `testing/audit_policy_dataset.py`.
+- Existing `chop` is under `/fs/nexus-scratch/gershom/anaconda3/envs/chop`,
+  with torch 2.2.0 and transformers 4.40.1. It is left unchanged.
+- New `.venv-reward`: UV-managed Python 3.10, torch 2.8.0+cu126,
+  torchvision 0.23.0, transformers 5.15.0. Transformers 4.56.2 failed strict
+  checkpoint loading because its DINO parameter names differ; 5.15.0 matches
+  the workstation. Dependencies are in `training/requirements-policy-reward.txt`.
+- Reward checkpoint transferred to
+  `weights/trajectory_reward/compact_lr1e4_no_reg/best.pt`; SHA256 matches:
+  `aaab3a24df5e21b671a049122625aa3061f81fbf9f3f192e404e215e7a0087ce`.
+- Completed LMDB transferred to the documented gamma-scratch path using rsync;
+  it opens read-only with 58,452 entries. DINO model/processor files are staged
+  under `/gammascratch/gershom/CHOP/huggingface`; no credentials were copied.
+- The workstation source disk was unmounted at setup time and was mounted
+  read-only at `/media/beast-gamma/Media2` for transfer.
 
 ## Verified cluster conventions
 

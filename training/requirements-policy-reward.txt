@@ -1,6 +1,7 @@
 # Install a cluster-compatible torch + torchvision pair separately.
 # Do not install the root OmniVLA pyproject into this environment.
-transformers>=4.56,<6
+# Match the trained checkpoint's nested DINOv3 state-dict keys.
+transformers==5.15.0
 numpy
 pillow
 lmdb

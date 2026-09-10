@@ -84,7 +84,7 @@ git submodule update --init policy_sources/visualnav_transformer
 # Install a matching torch/torchvision build supported by the cluster's driver.
 # Supply the cluster-approved wheel index/version if required:
 "$UV_BIN" pip install --python .venv-reward/bin/python torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu126
-"$UV_BIN" pip install --python .venv-reward/bin/python -r training/requirements-policy-reward.txt transformers==4.56.2
+"$UV_BIN" pip install --python .venv-reward/bin/python -r training/requirements-policy-reward.txt
 ```
 
 The old `chop` environment exists under
@@ -92,6 +92,8 @@ The old `chop` environment exists under
 It has torch 2.2.0 / transformers 4.40.1 and is left unchanged for SFT jobs.
 The reward environment uses CUDA 12.6 wheels; an L40S allocation reported driver
 595.71.05 during setup. DINO model/processor files are staged under `HF_HOME`.
+Transformers is pinned to 5.15.0 to match the workstation reward checkpoint;
+4.56.2 can construct DINOv3 but has incompatible state-dict parameter names.
 
 Prepare/download the checkpoint's DINOv3 model and processor in your Hugging Face
 cache on a login/download node if compute nodes have no network. Use your own
