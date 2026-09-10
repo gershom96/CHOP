@@ -278,3 +278,15 @@ def test_omni_reference_disables_adapter_and_avoids_supervised_forward(monkeypat
     assert model.module.enabled and model.module.adapter.grad is not None
     assert model.module.base.grad is None
     assert all(p.grad is None for p in step.head.module.parameters())
+def test_scheduler_signal_requests_safe_checkpoint(monkeypatch):
+    import signal
+    from training.finetune_policy_reward import install_stop_handlers
+
+    handlers = {}
+    monkeypatch.setattr(signal, "signal", lambda sig, handler: handlers.update({sig: handler}))
+    state = install_stop_handlers()
+    assert state["signal"] is None
+    handlers[signal.SIGUSR1](signal.SIGUSR1, None)
+    assert state["signal"] == "SIGUSR1"
+    handlers[signal.SIGTERM](signal.SIGTERM, None)
+    assert state["signal"] == "SIGTERM"

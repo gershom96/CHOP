@@ -4,6 +4,7 @@ import argparse
 import copy
 import json
 import random
+import signal
 import sys
 import time
 from pathlib import Path
@@ -15,6 +16,19 @@ from torch.utils.data import DataLoader, Subset
 from datasets.policy_reward_dataset import PolicyRewardDataset, policy_reward_collate
 from training.policy_reward import FrozenPolicyReward
 from training.policy_reward_loading import ResumableOrder, legacy_first_epoch_order
+
+
+def install_stop_handlers():
+    """Signal handlers only request a stop; checkpoint outside backward/I/O."""
+    state = {"signal": None}
+
+    def request_stop(signum, _frame):
+        state["signal"] = signal.Signals(signum).name
+        print(f"Graceful checkpoint requested: {state['signal']}", flush=True)
+
+    signal.signal(signal.SIGUSR1, request_stop)
+    signal.signal(signal.SIGTERM, request_stop)
+    return state
 
 
 def load_policy(path):
@@ -93,6 +107,7 @@ def main():
         help="Include all eligible observations; compute missing frozen DINO features online",
     )
     a = p.parse_args()
+    stop_state = install_stop_handlers()
     train_bags = {r["bag"] for r in json.loads(Path(a.train_split).read_text())}
     val_bags = {r["bag"] for r in json.loads(Path(a.val_split).read_text())}
     if train_bags & val_bags:
@@ -274,6 +289,9 @@ def main():
         total = {}
         count = 0
         for b in loaders[1] if full else monitor_loader:
+            if stop_state["signal"]:
+                # Never label an interrupted subset as full validation.
+                return None
             metrics, n = step_batch(b, False)
             count += n
             for k, v in metrics.items():
@@ -313,7 +331,11 @@ def main():
         save_checkpoint(0, "best.pt")
     iterator = iter(loaders[0])
     started = time.monotonic()
+    step = start_step
     for step in range(start_step + 1, total_steps + 1):
+        if stop_state["signal"]:
+            step -= 1
+            break
         loading_started = time.monotonic()
         try:
             b = next(iterator)
@@ -327,7 +349,7 @@ def main():
         metrics, _ = step_batch(b, True)
         metrics["data_wait_seconds"] = data_seconds
         metrics["compute_seconds"] = time.monotonic() - compute_started
-        if step % 10 == 0:
+        if step == start_step + 1 or step % 10 == 0:
             print(
                 json.dumps(
                     {
@@ -345,13 +367,17 @@ def main():
         if step == min(50, a.eval_every) or step % a.eval_every == 0 or full:
             save_checkpoint(step, "latest.pt")
             result = evaluate(step, full=full)
-            if full and result["val/objective"] < best_objective:
+            if full and result is not None and result["val/objective"] < best_objective:
                 best_objective = result["val/objective"]
                 save_checkpoint(step, "best.pt")
-    (a.output / "completed.json").write_text(
+    if stop_state["signal"]:
+        save_checkpoint(step, "latest.pt")
+        print(f"Saved checkpoint at step {step}; stopping for {stop_state['signal']}", flush=True)
+    (a.output / ("stopped.json" if stop_state["signal"] else "completed.json")).write_text(
         json.dumps(
             {
-                "step": total_steps,
+                "step": step,
+                "stop_signal": stop_state["signal"],
                 "epochs": a.epochs,
                 "best_validation_objective": best_objective,
             }

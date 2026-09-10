@@ -9,7 +9,8 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=48G
-#SBATCH --time=1-23:00:00
+#SBATCH --time=3-00:00:00
+#SBATCH --signal=B:USR1@300
 
 set -euo pipefail
 project_root="${CHOP_PROJECT_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}"

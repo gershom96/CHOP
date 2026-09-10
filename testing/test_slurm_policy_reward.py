@@ -1,11 +1,72 @@
 import os
 import shlex
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def run_launcher_rewrite(tmp_path, source):
+    """Exercise real Bash handoff without requiring datasets, torch, or CUDA."""
+    script = tmp_path / "launcher.sh"
+    script.write_text(source)
+    stub = tmp_path / "python-stub"
+    stub.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys, time\nfrom pathlib import Path\n"
+        "root = Path(os.environ['LAUNCH_TEST_ROOT'])\n"
+        "if 'training.warm_policy_image_cache' in sys.argv:\n"
+        "    (root / 'warming').touch()\n"
+        "    deadline = time.monotonic() + 10\n"
+        "    while not (root / 'continue').exists():\n"
+        "        if time.monotonic() > deadline: sys.exit(9)\n"
+        "        time.sleep(0.01)\n"
+        "if 'training.finetune_policy_reward' in sys.argv:\n"
+        "    (root / 'training-started').touch()\n"
+    )
+    stub.chmod(0o700)
+    required = tmp_path / "input"
+    required.touch()
+    cache = tmp_path / "features"
+    cache.mkdir()
+    (cache / "data.mdb").touch()
+    env = environment(tmp_path)
+    env.update(LAUNCH_TEST_ROOT=str(tmp_path), CHOP_PYTHON=str(stub),
+               CHOP_FEATURE_CACHE=str(cache), CHOP_IMAGE_ROOT=str(tmp_path),
+               CHOP_OUTPUT=str(tmp_path / "output"))
+    for key in ("INDEX", "TRAIN_SPLIT", "VAL_SPLIT", "PUBLIC_CHECKPOINT",
+                "REWARD_CHECKPOINT", "CALIBRATION"):
+        env[f"CHOP_{key}"] = str(required)
+    process = subprocess.Popen(["bash", str(script), "gnm"], env=env,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        deadline = time.monotonic() + 10
+        while not (tmp_path / "warming").exists():
+            if process.poll() is not None or time.monotonic() > deadline:
+                raise AssertionError("Launcher did not reach warm-up")
+            time.sleep(0.01)
+        # Exact shortening made by the checkout update during the failed jobs.
+        script.write_text(source.replace("/gammascratch/gershom/hf_cache", "/tmp/hf"))
+        (tmp_path / "continue").touch()
+        stdout, stderr = process.communicate(timeout=10)
+        return process.returncode, (tmp_path / "training-started").exists(), stdout, stderr
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+
+def test_trainer_handoff_survives_launcher_update_during_warmup(tmp_path):
+    result = run_launcher_rewrite(
+        tmp_path, (ROOT / "sbatch-scripts/run_policy_reward.sh").read_text()
+    )
+    assert result[0] == 0, result
+    assert result[1], result
+    assert "starting reward-policy optimization" in result[2]
 
 
 def environment(tmp_path):
@@ -130,3 +191,5 @@ def test_gpu_type_matches_original_nexus_scripts(model, gpu):
     script = (ROOT / f"sbatch-scripts/finetune-{model}-reward.slurm").read_text()
     assert f"#SBATCH --gres=gpu:{gpu}:1" in script
     assert "#SBATCH --ntasks=1" in script
+    assert "#SBATCH --time=3-00:00:00" in script
+    assert "#SBATCH --signal=B:USR1@300" in script

@@ -26,14 +26,35 @@ sbatch sbatch-scripts/finetune-gnm-reward.slurm
 sbatch sbatch-scripts/finetune-vint-reward.slurm
 ```
 
-Each submission requests **one GPU**, six CPUs and 48 GB RAM. Time limits match
-the old launchers: 43 hours for GNM and 47 hours for ViNT. The trainer
+Each submission requests **one GPU**, six CPUs and 48 GB RAM, with a 72-hour
+wall-time limit. The default three-epoch run may finish earlier. For a three-day
+run, set `CHOP_EPOCHS=1000` as a high epoch ceiling; Slurm bounds the duration.
+Slurm sends USR1 five minutes before the limit. The trainer finishes its current
+batch, saves `latest.pt`, writes `stopped.json`, and exits. Interrupted validation
+is not reported as a full validation result. The trainer
 is single-GPU, so requesting multiple GPUs does not accelerate one job. Slurm
 assigns visible devices; the launchers do not overwrite `CUDA_VISIBLE_DEVICES`.
 Override scheduler resources at submission if needed, e.g.
 `sbatch --gres=gpu:rtxa5000:1 sbatch-scripts/finetune-gnm-reward.slurm`.
 Logs are `slurm-chop-gnm-reward-<jobid>.out/.err` and the analogous ViNT files in
 the submission directory; no pre-existing logs directory is required.
+
+The shared launcher parses its complete function before starting warm-up, so
+an in-place launcher update cannot silently discard the final training command.
+It logs the warm-up-to-optimization handoff explicitly. Still finish deployment
+before submitting jobs; do not modify training code underneath active runs.
+
+To reuse the verified node-local caches from the previous jobs:
+
+```bash
+CHOP_EPOCHS=1000 CHOP_POLICY_IMAGE_CACHE=/scratch1/chop-policy-gershom-7490936 \
+  sbatch --nodelist=gammagpu19 sbatch-scripts/finetune-gnm-reward.slurm
+CHOP_EPOCHS=1000 CHOP_POLICY_IMAGE_CACHE=/scratch1/chop-policy-gershom-7490937 \
+  sbatch --nodelist=gammagpu19 --gres=gpu:l40s:1 sbatch-scripts/finetune-vint-reward.slurm
+```
+
+These cache paths exist on `gammagpu19`, not the login node. Warm-up still checks
+all cached entries but does not re-decode the original images.
 
 ## Expected files and path overrides
 

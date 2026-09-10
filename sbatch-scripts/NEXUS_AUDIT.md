@@ -104,3 +104,16 @@ Initial full-job preflight failures exposed a nearly full `/tmp` and an inherite
 Full-data submissions: GNM `7490936`, ViNT `7490937`, using one L40S GPU each.
 Each requests three epochs over 79,361 training and 19,113 validation observations;
 the ViNT submission overrides its RTX A5000 default with `--gres=gpu:l40s:1`.
+
+## Handoff failure and three-day restart
+
+Jobs 7490936/7490937 completed all cache preparation but exited without invoking
+the trainer. The shared launcher was shortened by a checkout update while Bash
+was blocked on warm-up. A local regression reproduced exit code 0 with no
+trainer invocation for the old launcher; parsing the complete `main` function
+before execution survives that same in-place update and reaches optimization.
+Both old cache directories still contain 101,514 NumPy files on `gammagpu19`.
+The restart reuses those caches. Scheduler limits are now 72 hours with
+`B:USR1@300`, and the trainer checkpoints safely on USR1/TERM without treating
+interrupted validation as full validation. A high epoch ceiling (1000) keeps
+optimization running until the scheduler's three-day limit.

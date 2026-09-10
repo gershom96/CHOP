@@ -2,6 +2,10 @@
 # Shared cluster launcher for reward-only GNM / ViNT optimization, not BT training.
 set -euo pipefail
 umask 077
+# Parse the entire launch sequence before executing any long-running command.
+# Otherwise an in-place checkout update during warm-up can move Bash's file
+# offset past the final trainer command and produce a misleading clean exit.
+main() {
 model="${1:?Usage: run_policy_reward.sh gnm|vint [--dry-run]}"
 shift
 case "$model" in gnm|vint) ;; *) echo "Unsupported model: $model" >&2; exit 2 ;; esac
@@ -128,5 +132,9 @@ transformers.AutoImageProcessor.from_pretrained("facebook/dinov3-vits16-pretrain
 print("Preflight passed:", "torch", torch.__version__, "transformers", transformers.__version__,
       "GPU", torch.cuda.get_device_name(0), flush=True)
 PY
+echo 'Starting policy image cache warm-up.'
 "${warm[@]}"
+echo 'Cache warm-up complete; starting reward-policy optimization.'
 exec "${train[@]}"
+}
+main "$@"
