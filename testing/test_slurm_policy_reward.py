@@ -142,6 +142,22 @@ def test_resume_and_model_checkpoint_overrides(tmp_path):
     assert "--disable-wandb" in command
 
 
+@pytest.mark.parametrize("exists", [True, False])
+def test_optional_old_node_cache_does_not_pin_job(tmp_path, exists):
+    cache = tmp_path / "previous-node-cache"
+    if exists:
+        cache.mkdir()
+    env = environment(tmp_path)
+    env["CHOP_REUSE_POLICY_IMAGE_CACHE"] = str(cache)
+    result = subprocess.run(
+        ["bash", str(ROOT / "sbatch-scripts/run_policy_reward.sh"), "gnm", "--dry-run"],
+        env=env, text=True, capture_output=True, check=True,
+    )
+    command = shlex.split(result.stdout.splitlines()[-1])
+    expected = cache if exists else tmp_path / "local scratch/chop-policy-images-v1"
+    assert command[command.index("--policy-image-cache") + 1] == str(expected)
+
+
 def test_missing_scratch_is_not_silently_replaced_with_network_cache(tmp_path):
     env = environment(tmp_path)
     for key in ("CHOP_SCRATCH_ROOT", "SLURM_TMPDIR", "TMPDIR", "SLURM_JOB_ID"):

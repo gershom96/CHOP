@@ -55,6 +55,10 @@ CHOP_EPOCHS=1000 CHOP_POLICY_IMAGE_CACHE=/scratch1/chop-policy-gershom-7490937 \
 
 These cache paths exist on `gammagpu19`, not the login node. Warm-up still checks
 all cached entries but does not re-decode the original images.
+To avoid waiting specifically for that node, use `CHOP_REUSE_POLICY_IMAGE_CACHE`
+instead of `CHOP_POLICY_IMAGE_CACHE` and omit `--nodelist`. This reuses the cache
+only if it exists on the allocated node, otherwise prepares a fresh local cache.
+`--gres=gpu:1` permits any GPU type advertised by the gamma partition.
 
 ## Expected files and path overrides
 

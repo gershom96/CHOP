@@ -34,6 +34,10 @@ output="${CHOP_OUTPUT:-$reward_root/policy_reward/${model}_${CHOP_RUN_TAG:-clust
 scratch_root="${CHOP_SCRATCH_ROOT:-${SLURM_TMPDIR:-}}"
 if [[ -n "${CHOP_POLICY_IMAGE_CACHE:-}" ]]; then
   image_cache="$CHOP_POLICY_IMAGE_CACHE"
+elif [[ -n "${CHOP_REUSE_POLICY_IMAGE_CACHE:-}" && -d "$CHOP_REUSE_POLICY_IMAGE_CACHE" && -O "$CHOP_REUSE_POLICY_IMAGE_CACHE" ]]; then
+  # Reuse a previous node-local cache if scheduled on the same node; otherwise
+  # allow any available GPU and rebuild in that node's dedicated scratch.
+  image_cache="$CHOP_REUSE_POLICY_IMAGE_CACHE"
 elif [[ -n "$scratch_root" ]]; then
   image_cache="$scratch_root/chop-policy-images-v1"
 elif [[ -n "${SLURM_JOB_ID:-}" ]]; then
