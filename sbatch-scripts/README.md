@@ -50,7 +50,8 @@ or set it explicitly. The following defaults are relative to that checkout:
 | `CHOP_VAL_SPLIT` | `$CHOP_REWARD_ROOT/splits_v1/validation.json` |
 | `CHOP_IMAGE_ROOT` | `/fs/gamma-datasets/SCAND/images` |
 | `CHOP_PUBLIC_CHECKPOINT` | `weights/gnm.pth` or `weights/vint.pth` |
-| `CHOP_REWARD_CHECKPOINT` | `$CHOP_REWARD_ROOT/ablations_v1/compact_lr1e4_no_reg/best.pt` |
+| `CHOP_REWARD_CHECKPOINT` | `weights/trajectory_reward/compact_lr1e4_no_reg/best.pt` |
+| `HF_HOME` | `/gammascratch/gershom/CHOP/huggingface` |
 | `CHOP_FEATURE_CACHE` | `/gammascratch/gershom/CHOP/reward_model/dinov3_feature_cache` |
 | `CHOP_CALIBRATION` | `evaluation/scand_cameras.json` |
 | `CHOP_OUTPUT` | `$CHOP_REWARD_ROOT/policy_reward/<model>_cluster_reward_v1` |
@@ -63,8 +64,9 @@ do not copy a database while another job is modifying it. Raw pair labels are
 not inputs to this policy-optimization stage.
 
 The verified CHOP checkout already has `data/lora-data/train.json`, `test.json`,
-and public `weights/gnm.pth` / `weights/vint.pth`. The large frozen reward and
-DINO cache still need transfer; `.venv-reward` is not yet installed there.
+and public `weights/gnm.pth` / `weights/vint.pth`. All 101,514 images referenced
+by the training index were verified present on September 10, 2026. Reward model
+files belong alongside public policy weights; bag splits stay under `data/`.
 The DINO cache is deliberately outside `/fs/nexus-scratch`: at inspection that
 allocation had only about 33 GiB free, versus about 74 GiB on gamma scratch.
 
@@ -74,13 +76,22 @@ Use a separate UV environment, **not** the root project's OmniVLA-pinned
 `pyproject.toml` or Conda environment:
 
 ```bash
-uv venv --python 3.10 .venv-reward
+export UV_CACHE_DIR=/gammascratch/gershom/CHOP/uv-cache
+export UV_PYTHON_INSTALL_DIR=/gammascratch/gershom/CHOP/uv-python
+UV_BIN=/gammascratch/gershom/CHOP/tools/uv
+"$UV_BIN" venv --python 3.10 .venv-reward
 git submodule update --init policy_sources/visualnav_transformer
 # Install a matching torch/torchvision build supported by the cluster's driver.
 # Supply the cluster-approved wheel index/version if required:
-uv pip install --python .venv-reward/bin/python torch torchvision
-uv pip install --python .venv-reward/bin/python -r training/requirements-policy-reward.txt
+"$UV_BIN" pip install --python .venv-reward/bin/python torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu126
+"$UV_BIN" pip install --python .venv-reward/bin/python -r training/requirements-policy-reward.txt transformers==4.56.2
 ```
+
+The old `chop` environment exists under
+`/fs/nexus-scratch/gershom/anaconda3/envs/chop` (not the active Miniconda root).
+It has torch 2.2.0 / transformers 4.40.1 and is left unchanged for SFT jobs.
+The reward environment uses CUDA 12.6 wheels; an L40S allocation reported driver
+595.71.05 during setup. DINO model/processor files are staged under `HF_HOME`.
 
 Prepare/download the checkpoint's DINOv3 model and processor in your Hugging Face
 cache on a login/download node if compute nodes have no network. Use your own

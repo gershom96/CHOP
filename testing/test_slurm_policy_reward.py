@@ -49,6 +49,9 @@ def test_cluster_commands_use_cluster_defaults_and_full_data(tmp_path, model):
         tmp_path / "local scratch/chop-policy-images-v1"
     )
     assert command[command.index("--train-limit") + 1] == "0"
+    assert command[command.index("--reward-checkpoint") + 1] == str(
+        ROOT / "weights/trajectory_reward/compact_lr1e4_no_reg/best.pt"
+    )
     assert command[command.index("--val-limit") + 1] == "0"
     assert "--include-uncached" in command
     assert "/media/beast-gamma" not in result.stdout
