@@ -51,7 +51,7 @@ or set it explicitly. The following defaults are relative to that checkout:
 | `CHOP_IMAGE_ROOT` | `/fs/gamma-datasets/SCAND/images` |
 | `CHOP_PUBLIC_CHECKPOINT` | `weights/gnm.pth` or `weights/vint.pth` |
 | `CHOP_REWARD_CHECKPOINT` | `weights/trajectory_reward/compact_lr1e4_no_reg/best.pt` |
-| `HF_HOME` | `/gammascratch/gershom/CHOP/huggingface` |
+| `HF_HOME` | `/gammascratch/gershom/hf_cache` (existing cluster model cache) |
 | `CHOP_FEATURE_CACHE` | `/gammascratch/gershom/CHOP/reward_model/dinov3_feature_cache` |
 | `CHOP_CALIBRATION` | `evaluation/scand_cameras.json` |
 | `CHOP_OUTPUT` | `$CHOP_REWARD_ROOT/policy_reward/<model>_cluster_reward_v1` |

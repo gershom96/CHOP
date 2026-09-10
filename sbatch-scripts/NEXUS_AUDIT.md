@@ -62,7 +62,8 @@ configuration commit was merged without conflicts. Its submodule is unchanged.
   `aaab3a24df5e21b671a049122625aa3061f81fbf9f3f192e404e215e7a0087ce`.
 - Completed LMDB transferred to the documented gamma-scratch path using rsync;
   it opens read-only with 58,452 entries. DINO model/processor files are staged
-  under `/gammascratch/gershom/CHOP/huggingface`; no credentials were copied.
+  under `/gammascratch/gershom/CHOP/huggingface` and then copied into the existing
+  shell-configured `/gammascratch/gershom/hf_cache`; no credentials were copied.
 - The workstation source disk was unmounted at setup time and was mounted
   read-only at `/media/beast-gamma/Media2` for transfer.
 
@@ -76,8 +77,9 @@ configuration commit was merged without conflicts. Its submodule is unchanged.
   They use a separate UV environment, as requested, not the old Conda environment.
 - Public weights and original train/test indices exist under this checkout.
   SCAND image root is `/fs/gamma-datasets/SCAND/images`.
-- `TMPDIR=/gammascratch/gershom/tmp` is NFS. New scripts deliberately ignore it
-  for image caching and use Slurm local scratch or job-specific `/tmp`.
+- `TMPDIR=/gammascratch/gershom/tmp` is NFS. New scripts use advertised Slurm
+  scratch, otherwise writable `/scratch1`, `/scratch0`, then `/tmp`. Worker
+  temporary files are redirected under that validated local cache as well.
 - At inspection `/fs/nexus-scratch` had about 33 GiB free, and the user's gamma
   scratch had about 74 GiB. The default DINO LMDB destination is therefore
   `/gammascratch/gershom/CHOP/reward_model/dinov3_feature_cache`.
@@ -91,6 +93,14 @@ lazy so standalone reward training does not import the OmniVLA stack eagerly.
 The four old SFT sbatch scripts, NoMaD config, submodules, existing weights/data,
 and unrelated local visualization/evaluation changes are not overwritten.
 
-Large checkpoint/cache transfer, UV installation and actual GPU training are
-separate remaining setup steps. No Slurm training jobs are submitted by this
-audit/deployment; scheduler `--test-only` checks do not enqueue jobs.
+The initial audit used only scheduler `--test-only` checks. At the user's later
+request, checkpoint/cache transfer and UV setup were completed and real jobs
+were submitted. GNM and ViNT each passed a two-update real-data GPU smoke test:
+finite objectives, nonzero gradients, and slight reward gains on eight sampled
+validation observations. This validates execution, not full-data improvement.
+
+Initial full-job preflight failures exposed a nearly full `/tmp` and an inherited
+`HF_HOME` different from the staging location. Both were fixed before optimization.
+Full-data submissions: GNM `7490936`, ViNT `7490937`, using one L40S GPU each.
+Each requests three epochs over 79,361 training and 19,113 validation observations;
+the ViNT submission overrides its RTX A5000 default with `--gres=gpu:l40s:1`.

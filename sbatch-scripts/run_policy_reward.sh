@@ -22,7 +22,7 @@ image_root="${CHOP_IMAGE_ROOT:-/fs/gamma-datasets/SCAND/images}"
 checkpoint="${CHOP_PUBLIC_CHECKPOINT:-$project_root/weights/$model.pth}"
 reward_checkpoint="${CHOP_REWARD_CHECKPOINT:-$project_root/weights/trajectory_reward/compact_lr1e4_no_reg/best.pt}"
 # Model files only, staged from the authorized workstation cache; no credentials.
-export HF_HOME="${HF_HOME:-/gammascratch/gershom/CHOP/huggingface}"
+export HF_HOME="${HF_HOME:-/gammascratch/gershom/hf_cache}"
 # The Nexus project allocation has less free space than the ~41 GiB LMDB.
 feature_cache="${CHOP_FEATURE_CACHE:-/gammascratch/gershom/CHOP/reward_model/dinov3_feature_cache}"
 calibration="${CHOP_CALIBRATION:-$project_root/evaluation/scand_cameras.json}"
