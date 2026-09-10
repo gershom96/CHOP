@@ -33,8 +33,15 @@ if [[ -n "${CHOP_POLICY_IMAGE_CACHE:-}" ]]; then
 elif [[ -n "$scratch_root" ]]; then
   image_cache="$scratch_root/chop-policy-images-v1"
 elif [[ -n "${SLURM_JOB_ID:-}" ]]; then
-  # Nexus TMPDIR points to NFS, not node-local storage.
-  image_cache="/tmp/chop-policy-${USER:-$(id -un)}-${SLURM_JOB_ID}"
+  # Nexus TMPDIR is NFS and /tmp may be full; prefer the dedicated local disks.
+  local_root=/tmp
+  for candidate in /scratch1 /scratch0; do
+    if [[ -d "$candidate" && -w "$candidate" ]]; then
+      local_root="$candidate"
+      break
+    fi
+  done
+  image_cache="$local_root/chop-policy-${USER:-$(id -un)}-${SLURM_JOB_ID}"
 else
   echo 'Set CHOP_SCRATCH_ROOT to node-local scratch (or CHOP_POLICY_IMAGE_CACHE). No local scratch was advertised.' >&2
   exit 2

@@ -107,7 +107,10 @@ and at least 5 GiB free cache space before warming data.
 
 Before training, the job warms exact resized policy inputs on node-local storage.
 The cache directory defaults to `$SLURM_TMPDIR/chop-policy-images-v1`, then
-`/tmp/chop-policy-$USER-$SLURM_JOB_ID`. **Do not use the login shell's TMPDIR:**
+`/scratch1/chop-policy-$USER-$SLURM_JOB_ID` (or writable `/scratch0`, then
+`/tmp`, when the dedicated mounts are absent). The first L40S allocation had
+6.9 TiB free on `/scratch1` but only 2.4 GiB in `/tmp`, so the dedicated local
+disk is preferred. **Do not use the login shell's TMPDIR:**
 on Nexus it points to `/gammascratch/gershom/tmp`, an NFS mount. Network-backed
 image caches are rejected at startup. Python worker temporary files are also
 redirected to `.tmp` under the validated local cache, avoiding NFS socket cleanup

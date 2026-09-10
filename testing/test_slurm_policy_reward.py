@@ -109,9 +109,12 @@ def test_nexus_job_does_not_use_nfs_tmpdir(tmp_path):
         check=True,
     )
     command = shlex.split(result.stdout.splitlines()[-1])
-    assert (
-        command[command.index("--policy-image-cache") + 1]
-        == "/tmp/chop-policy-gershom-12345"
+    local_root = next(
+        (p for p in ("/scratch1", "/scratch0") if Path(p).is_dir() and os.access(p, os.W_OK)),
+        "/tmp",
+    )
+    assert command[command.index("--policy-image-cache") + 1] == (
+        local_root + "/chop-policy-gershom-12345"
     )
     assert (
         command[command.index("--feature-cache") + 1]
