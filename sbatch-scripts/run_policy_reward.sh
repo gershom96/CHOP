@@ -89,6 +89,9 @@ case "$cache_fs" in
     exit 2
     ;;
 esac
+# Python worker sockets and cleanup must not inherit Nexus's NFS TMPDIR either.
+mkdir -p "$image_cache/.tmp"
+export TMPDIR="$image_cache/.tmp"
 # Prevent two submissions from writing the same checkpoint and metrics files.
 exec 9>"$output/.training.lock"
 flock -n 9 || { echo "Another job owns output: $output" >&2; exit 2; }

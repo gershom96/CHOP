@@ -109,7 +109,9 @@ Before training, the job warms exact resized policy inputs on node-local storage
 The cache directory defaults to `$SLURM_TMPDIR/chop-policy-images-v1`, then
 `/tmp/chop-policy-$USER-$SLURM_JOB_ID`. **Do not use the login shell's TMPDIR:**
 on Nexus it points to `/gammascratch/gershom/tmp`, an NFS mount. Network-backed
-image caches are rejected at startup. Set `CHOP_SCRATCH_ROOT` or
+image caches are rejected at startup. Python worker temporary files are also
+redirected to `.tmp` under the validated local cache, avoiding NFS socket cleanup
+errors. Set `CHOP_SCRATCH_ROOT` or
 `CHOP_POLICY_IMAGE_CACHE` if your cluster advertises scratch differently.
 Choose actual local SSD storage, not a shared network directory. Budget roughly
 2 GB for policy images **plus at least 3 GiB free headroom**. The existing DINO

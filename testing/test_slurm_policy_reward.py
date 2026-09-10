@@ -117,6 +117,9 @@ def test_nexus_job_does_not_use_nfs_tmpdir(tmp_path):
         command[command.index("--feature-cache") + 1]
         == "/gammascratch/gershom/CHOP/reward_model/dinov3_feature_cache"
     )
+    script = (ROOT / "sbatch-scripts/run_policy_reward.sh").read_text()
+    assert 'export TMPDIR="$image_cache/.tmp"' in script
+    assert script.index('cache_fs=') < script.index('export TMPDIR=')
 
 
 @pytest.mark.parametrize("model,gpu", [("gnm", "l40s"), ("vint", "rtxa5000")])
