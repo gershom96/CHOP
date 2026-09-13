@@ -75,6 +75,7 @@ class PathManagerNode(Node):
         self.create_subscription(Empty, "/started", self.on_started, self.qos_profile)
         self.create_subscription(Path, "/path", self.on_path, self.qos_profile)
         self.create_subscription(Empty, "/req_goal", self.on_req_goal, self.qos_profile)
+        self.create_subscription(Empty, "/nav_stop", self.on_nav_stop, self.qos_profile)
 
         if self.overlay_enabled:
             self.bridge = CvBridge()
@@ -132,6 +133,11 @@ class PathManagerNode(Node):
             if self._path_start_xy.size != 0:
                 self._path_start_xy = self._path_start_xy[1:]
         self._drop_behind_and_publish()
+
+    def on_nav_stop(self, _msg: Empty):
+        with self._lock:
+            self._path_start_xy = np.empty((0, 2))
+            self._pts_w = np.empty((0, 2))
 
     def on_image(self, msg: CompressedImage):
         if not self.overlay_enabled:

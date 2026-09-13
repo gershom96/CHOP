@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="VcsDirectoryMappings">
+    <mapping directory="" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/policy_sources/diffusion_policy" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/policy_sources/omnivla" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/policy_sources/visualnav_transformer" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/weights/omnivla-finetuned-cast" vcs="Git" />
+  </component>
+</project>

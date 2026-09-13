@@ -10,7 +10,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 
-from std_msgs.msg import Empty
+from std_msgs.msg import Empty, String
 from nav_msgs.msg import Path
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import CompressedImage, Image
@@ -126,6 +126,7 @@ class ModelNode(Node):
         self._have_goal_img = False
         self._have_cur_pose = False
         self._have_goal_pose = False
+        self._have_goal_text = False
         self._have_context = False
         self.topomap: Optional[List[PILImage.Image]] = None
         self.closest_node: int = 0
@@ -142,11 +143,13 @@ class ModelNode(Node):
         # ---------- ROS I/O ----------
         self.pub_started = self.create_publisher(Empty, "/started", 10)
         self.pub_path = self.create_publisher(Path, "/path", 10)
+        self.pub_nav_stop = self.create_publisher(Empty, "/nav_stop", 10)
 
         self.bridge = CvBridge()
         self.sub_odom = self.create_subscription(Odometry, self.odom_topic, self.on_odom, qos_profile=self.qos_profile)
         self.sub_goal_img = self.create_subscription(CompressedImage, "/goal/image/compressed", self.on_goal_image, 10)
         self.sub_goal_pose = self.create_subscription(PoseStamped, "/goal/pose", self.on_goal_pose, 10)
+        self.sub_goal_text = self.create_subscription(String, "/goal/text", self.on_goal_text, 10)
         self.sub_nav = self.create_subscription(Empty, "/nav_cmd", self.on_nav_cmd, 10)
         self.context_timer = self.create_timer(self.context_update_period, self.update_context_from_current)
         self._worker = threading.Thread(target=self._inference_worker, daemon=True)
@@ -178,6 +181,7 @@ class ModelNode(Node):
             pos=None,
             yaw=None
         )
+        self.goal_text: Optional[str] = None
 
         self.context_frames = [ContextFrame(image=None) for _ in range(self.config.get("context_size", 0) + 1)]
         self.goal_img_needed = self.config.get("need_goal_img", True)
@@ -245,6 +249,16 @@ class ModelNode(Node):
                             save_images=False, 
                             radians=True,
                             vla_config=vla_config)
+        elif self.model_name == "navila":
+            from deployment.navila_inference import NavilaInference
+
+            model = NavilaInference(
+                repo_path=self.config["repo_path"],
+                model_path=self.config["model_path"],
+                model_base=self.config.get("model_base"),
+                num_video_frames=self.config.get("num_video_frames", 8),
+                max_new_tokens=self.config.get("max_new_tokens", 32),
+            )
         else:
             raise ValueError(f"Unsupported model type: {self.model_name}")
 
@@ -310,6 +324,7 @@ class ModelNode(Node):
                     pos=None if self.goal_frame.pos is None else self.goal_frame.pos.copy(),
                     yaw=self.goal_frame.yaw
                 )
+                goal_text = self.goal_text
 
                 # Snapshot context images (optional; safe)
                 ctx_imgs = [ContextFrame(image=cf.image.copy()) for cf in self.context_frames if cf.image is not None]
@@ -327,7 +342,7 @@ class ModelNode(Node):
 
             # ---- Run inference outside lock ----
             try:
-                path_xy = self.run_inference(model=model, cur_frame=cur, goal_frame=goal, context_frames=ctx_imgs, noise_scheduler=noise_scheduler)
+                path_xy = self.run_inference(model=model, cur_frame=cur, goal_frame=goal, context_frames=ctx_imgs, goal_text=goal_text, noise_scheduler=noise_scheduler)
             except Exception as e:
                 self.get_logger().error(f"Inference failed: {repr(e)}")
                 path_xy = None
@@ -336,6 +351,8 @@ class ModelNode(Node):
                 self._started_sent = False
                 try:
                     self.pub_path.publish(self._to_path_msg(path_xy))
+                    if self.model_name == "navila" and path_xy.size == 0:
+                        self.pub_nav_stop.publish(Empty())
                 except Exception as e:
                     self.get_logger().error(f"Publishing /path failed: {repr(e)}")
 
@@ -355,7 +372,10 @@ class ModelNode(Node):
             if not (self._have_cur_img and self._have_context):
                 return False
         elif self.model_name == "omnivla":
-            if not (self._have_cur_img and (self._have_goal_img or self._have_goal_pose) and self._have_cur_pose):
+            if not (self._have_cur_img and (self._have_goal_img or self._have_goal_pose or self._have_goal_text) and self._have_cur_pose):
+                return False
+        elif self.model_name == "navila":
+            if not (self._have_cur_img and self._have_context and self._have_goal_text):
                 return False
         return True
     # ---------------- callbacks ----------------
@@ -393,6 +413,13 @@ class ModelNode(Node):
             self._have_goal_pose = True
         self._trigger_inference()
 
+    def on_goal_text(self, msg: String):
+        text = msg.data.strip()
+        with self._lock:
+            self.goal_text = text if text else None
+            self._have_goal_text = bool(self.goal_text)
+        self._trigger_inference()
+
     def on_nav_cmd(self, _msg: Empty):
         # Placeholder for navigation trigger; currently no-op
         return
@@ -409,7 +436,7 @@ class ModelNode(Node):
 
         self._trigger_inference()
 
-    def run_inference(self, model, cur_frame, goal_frame, context_frames, noise_scheduler=None):
+    def run_inference(self, model, cur_frame, goal_frame, context_frames, goal_text=None, noise_scheduler=None):
         if hasattr(model, "parameters"):
             try:
                 device = next(model.parameters()).device
@@ -510,14 +537,34 @@ class ModelNode(Node):
             goal_pos = goal_frame.pos
             goal_yaw = goal_frame.yaw
 
+            has_goal_pose = goal_pos is not None and goal_yaw is not None
+            has_goal_image = goal_frame.image is not None
+            if goal_text and has_goal_image:
+                raise ValueError("OmniVLA does not define a language-plus-image goal modality.")
+            model.pose_goal = has_goal_pose
+            model.image_goal = has_goal_image
+            model.lan_prompt = bool(goal_text)
             model.update_current_state(cur_img, cur_pos, cur_yaw)
             model.update_goal(goal_image_PIL=goal_img, 
                                     goal_utm=goal_pos,
                                     goal_compass=goal_yaw, 
-                                    lan_inst_prompt=None)
+                                    lan_inst_prompt=goal_text)
             model.run()
             waypoints = model.waypoints.reshape(-1, model.waypoints.shape[-1])
             path_xy = waypoints[:, :2] * self.waypoint_spacing  # Convert to meters
+        elif self.model_name == "navila":
+            from deployment.navila_inference import navila_command_to_path, parse_navila_command
+
+            images = [PILImage.fromarray(frame.image[:, :, ::-1]) for frame in context_frames]
+            images.append(PILImage.fromarray(cur_frame.image[:, :, ::-1]))
+            output = model.infer(images=images, instruction=goal_text)
+            self.get_logger().info(f"NaVILA command: {output}")
+            command = parse_navila_command(output)
+            path_xy = navila_command_to_path(
+                command,
+                waypoint_spacing=self.waypoint_spacing,
+                turn_radius=float(self.config.get("turn_radius", 0.35)),
+            )
         else:
             raise ValueError(f"Unsupported model type: {self.model_name}")
 

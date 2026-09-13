@@ -13,3 +13,7 @@ gnm:
 ########### Config for NoMAD ###########
 nomad:
   config_path : ./configs/chop_nomad_vnt.yaml
+
+########### Config for NaVILA ###########
+navila:
+  config_path : ./configs/chop_navila.yaml

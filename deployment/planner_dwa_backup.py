@@ -39,9 +39,9 @@ class LaserScanConfig:
 
 class RobotConfig():
 
-    max_speed = 0.3        # [m/s]
+    max_speed = 0.2        # [m/s]
     min_speed = 0.0        # [m/s]
-    max_yawrate = 0.25    # [rad/s]
+    max_yawrate = 0.2    # [rad/s]
     max_accel = 1          # [m/s^2]
     max_dyawrate = 3.2     # [rad/s^2]
 
@@ -89,7 +89,6 @@ class Planner(Node):
             self.ctrl_pub = self.create_publisher(Twist, "/dont_publish", 1)
             print("Not publishing!")
         self.req_goal_pub = self.create_publisher(Empty, "/req_goal", 10)
-        self.create_subscription(Empty, "/nav_stop", self.on_nav_stop, self.qos_profile)
 
         self.x = None
         self.y = None
@@ -166,12 +165,6 @@ class Planner(Node):
         self.goalX = radius * np.cos(theta)
         self.goalY = radius * np.sin(theta)
         self._goal_req_sent = False
-
-    def on_nav_stop(self, _msg):
-        self.goalX = None
-        self.goalY = None
-        self._goal_req_sent = False
-        self.ctrl_pub.publish(Twist())
 
     # Callback for Odometry
     def on_odom(self, msg):

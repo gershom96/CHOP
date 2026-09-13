@@ -1,0 +1,13 @@
+# NaVILA is optional and loaded only when deployment/model_run.py uses -m navila.
+repo_path: ./policy_sources/navila
+model_path: ./weights/navila-llama3-8b-8f
+model_base: null
+
+# NaVILA uses recent camera frames and a language instruction from /goal/text.
+context_size: 7
+context_update_period: 0.3
+num_video_frames: 8
+max_new_tokens: 32
+
+# Adapter from NaVILA's language command to the local /path interface.
+turn_radius: 0.35

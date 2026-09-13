@@ -1,0 +1,68 @@
+FROM osrf/ros:humble-desktop
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    curl \
+    git \
+    python3-colcon-common-extensions \
+    python3-numpy \
+    python3-rosdep \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV CONDA_DIR=/opt/miniconda
+RUN wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh \
+    && bash /tmp/miniconda.sh -b -p "${CONDA_DIR}" \
+    && rm /tmp/miniconda.sh
+
+ENV PATH=${CONDA_DIR}/bin:${PATH}
+
+RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main \
+    && conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r \
+    && conda update -n base -c defaults -y conda
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+
+RUN conda create -y -n navilla python=3.10 \
+    && conda clean -afy
+
+ENV CONDA_DEFAULT_ENV=navilla
+ENV PATH=${CONDA_DIR}/envs/${CONDA_DEFAULT_ENV}/bin:${CONDA_DIR}/bin:${PATH}
+
+WORKDIR /workspace/chop
+COPY . /workspace/chop
+
+ARG NAVILA_REPO=https://github.com/AnjieCheng/NaVILA.git
+ARG NAVILA_REF=main
+
+RUN if [ ! -d /workspace/chop/policy_sources/navila/.git ]; then \
+        git clone --depth 1 --branch "${NAVILA_REF}" "${NAVILA_REPO}" /workspace/chop/policy_sources/navila; \
+    fi
+
+RUN source /opt/ros/humble/setup.bash \
+    && source "${CONDA_DIR}/bin/activate" "${CONDA_DEFAULT_ENV}" \
+    && uv pip install --no-deps -e /workspace/chop \
+    && cd /workspace/chop/policy_sources/navila \
+    && ./environment_setup.sh \
+    && pip install -r evaluation/requirements.txt \
+    && pip install webdataset==0.1.103 scipy pyyaml diffusers==0.11.1
+
+RUN printf '%s\n' \
+    '#!/bin/bash' \
+    'set -e' \
+    '' \
+    'source /opt/ros/humble/setup.bash' \
+    'source /opt/miniconda/bin/activate navilla' \
+    'export PYTHONPATH=/opt/ros/humble/lib/python3.10/site-packages:${PYTHONPATH}' \
+    '' \
+    'exec "$@"' \
+    > /ros_conda_entrypoint.sh \
+    && chmod +x /ros_conda_entrypoint.sh
+
+ENTRYPOINT ["/ros_conda_entrypoint.sh"]
+CMD ["bash"]

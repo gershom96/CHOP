@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="lo"/>
+        <NetworkInterface name="enp132s0"/>
+      </Interfaces>
+      <AllowMulticast>true</AllowMulticast>
+    </General>
+
+    <Discovery>
+      <Peers>
+        <Peer address="192.168.168.105"/>
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>
+
